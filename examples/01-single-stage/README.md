@@ -23,12 +23,12 @@ It is also the **smallest complete exercise of the engine**: config load → pro
 
 That is the whole rung: a spec, a chain, and one prompt. Nothing here is a convention doc or a rubric, because with a single stage there is nobody to agree with — [rung 02](../02-review-and-fix/) adds those at the moment they start to mean something.
 
-The job is [`../../fixtures/scaffold-duration`](../../fixtures/scaffold-duration/) — a zero-dependency duration parser/formatter, graded by `node --test`. Its spec is tight on purpose: exact error types per bad input, exact rounding, longest-first unit matching. A vague spec measures the spec, not the process.
+The job is [`../../fixtures/scaffold-todos`](../../fixtures/scaffold-todos/) — the classic todo list as one zero-dependency module, graded by `node --test`. Familiar on purpose: you can read the diff and judge it yourself, so what you are looking at is the process rather than the puzzle. Its spec is tight anyway — exact error types per bad input, which argument is validated first, and the rule that no function may modify the list it was given. A vague spec measures the spec, not the process.
 
 ## Run it
 
 ```bash
-node prep-workdir.mjs --fixture scaffold-duration --workdir /tmp/ck-01
+node prep-workdir.mjs --fixture scaffold-todos --workdir /tmp/ck-01
 node run.mjs --chain examples/01-single-stage/chain.yaml --workdir /tmp/ck-01
 ```
 

@@ -6,9 +6,10 @@ Greenfield on purpose. Measuring a process against an existing codebase means th
 
 | fixture | job | modules | used by |
 | --- | --- | --- | --- |
-| [scaffold-duration](scaffold-duration/) | duration string parse/format | 1 | examples 01, 02, 03 |
-| [scaffold-calc](scaffold-calc/) | expression calculator | 4 | example 04 |
-| [scaffold-router](scaffold-router/) | path-pattern router with precedence | 4 | — (a harder swap-in for example 04) |
+| [scaffold-todos](scaffold-todos/) | the classic todo list, as one pure module | 1 | examples 01, 02, 03 |
+| [scaffold-todo-cli](scaffold-todo-cli/) | the same list behind a command-line front end | 4 | example 04 |
+
+Both are a todo list, which is the point. The job is familiar enough that you can read a run's diff and judge it yourself without first learning a domain — so what you are looking at is the process, not the puzzle. The second is the first with a front end: argument parsing, storage, rendering, and the wiring between them. Holding the domain fixed across the ladder means a difference between rungs is about the chain, not about one job being harder than another.
 
 ## Layout
 
@@ -22,7 +23,7 @@ Greenfield on purpose. Measuring a process against an existing codebase means th
 ## Preparing a working directory
 
 ```bash
-node prep-workdir.mjs --fixture scaffold-duration --workdir /tmp/ck-run
+node prep-workdir.mjs --fixture scaffold-todos --workdir /tmp/ck-run
 ```
 
 That creates an empty git repo, copies in `acceptance/` and anything in `base/`, and commits. The commit matters: the gate compares against `HEAD` to prove the grader was not touched.
@@ -32,7 +33,7 @@ That creates an empty git repo, copies in `acceptance/` and anything in `base/`,
 ## Checking the grader
 
 ```bash
-node fixtures/scaffold-duration/check-grader.mjs
+node fixtures/scaffold-todos/check-grader.mjs
 ```
 
 Runs `acceptance/` against `reference/`. This is not ceremony. **A grader is an instrument, and a broken instrument returns a plausible number rather than an error** — a test suite with an over-tight assertion fails every run and looks like a model that cannot code, while one with a hole passes work that is wrong. Both conclusions are confident and wrong.

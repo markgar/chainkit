@@ -23,10 +23,10 @@ const dir = mkdtempSync(path.join(tmpdir(), "grader-"));
 try {
   mkdirSync(path.join(dir, "src"), { recursive: true });
   cpSync(path.join(here, "acceptance"), path.join(dir, "acceptance"), { recursive: true });
-  cpSync(path.join(here, "reference", "duration.js"), path.join(dir, "src", "duration.js"));
+  cpSync(path.join(here, "reference", "todos.js"), path.join(dir, "src", "todos.js"));
   writeFileSync(
     path.join(dir, "package.json"),
-    JSON.stringify({ name: "duration", type: "module" }, null, 2),
+    JSON.stringify({ name: "todos", type: "module" }, null, 2),
   );
 
   const out = execFileSync("bash", ["-o", "pipefail", "-c", "node --test acceptance/*.test.js"], {

@@ -28,7 +28,7 @@ Every file except `chain.yaml` is byte-identical to rung 02's, docs included. Th
 ## Run it
 
 ```bash
-node prep-workdir.mjs --fixture scaffold-duration --workdir /tmp/ck-03
+node prep-workdir.mjs --fixture scaffold-todos --workdir /tmp/ck-03
 node run.mjs --chain examples/03-bounded-loop/chain.yaml --workdir /tmp/ck-03
 ```
 

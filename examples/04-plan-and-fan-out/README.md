@@ -11,7 +11,7 @@ The last rung. One construct added to [rung 03](../03-bounded-loop/): `foreach` 
 
 ## The job changes here
 
-Rungs 01–03 build `duration`, a single module. This one builds [`../../fixtures/scaffold-calc`](../../fixtures/scaffold-calc/) — a four-module expression calculator (tokenize → parse → evaluate → index).
+Rungs 01–03 build `todos`, a single module. This one builds [`../../fixtures/scaffold-todo-cli`](../../fixtures/scaffold-todo-cli/) — the same todo list behind a command-line front end, in four modules (parse → store → render → app). Same domain, so the step up is the partition, not the subject matter.
 
 That is deliberate, not incidental: **there is nothing to fan out over in a one-file job.** Rungs 01–03 could not demonstrate this construct, and this chain cannot be run against their spec.
 
@@ -33,7 +33,7 @@ The two docs are copied in rather than linked out, so this rung is readable and 
 ## Run it
 
 ```bash
-node prep-workdir.mjs --fixture scaffold-calc --workdir /tmp/ck-04
+node prep-workdir.mjs --fixture scaffold-todo-cli --workdir /tmp/ck-04
 node run.mjs --chain examples/04-plan-and-fan-out/chain.yaml --workdir /tmp/ck-04
 ```
 
@@ -79,6 +79,6 @@ The builder here is a cheap, fast model. That is viable only because the plan ca
 
 Which means the failure mode moves. A vague blueprint does not produce a visibly confused builder — it produces a confident one, building the wrong thing, graded green by an acceptance command that was also vague.
 
-## A harder swap
+## What the last suite is for
 
-[`../../fixtures/scaffold-router`](../../fixtures/scaffold-router/) is the same shape (four modules, per-module grader) on a harder job: a path-pattern router with precedence rules. Point `spec` at it to run this chain against something that punishes a sloppy partition.
+Three of the four suites grade one module each, with only that module on disk — so a chunk's gate cannot pass on a neighbour's work, and a failure names the chunk that caused it. The fourth, `cli.test.js`, is the only one given all four files, and it exists for the defect per-chunk grading structurally cannot see: four modules that are each correct and wired together wrong. The trap it pins is that `list --filter done` must filter the view while the footer keeps counting the whole list. Every module can be right and that can still be wrong.

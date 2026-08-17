@@ -4,8 +4,8 @@
 # loop, and a `foreach` that runs the build/review/fix triple ONCE PER CHUNK with
 # its own bounded loop and its own gate.
 #
-# The job changes here, from the single-module `duration` package to the
-# four-module `calc` package. That is deliberate rather than incidental: there is
+# The job changes here, from the single-module `todos` package to the
+# four-module `todo-cli` package. That is deliberate rather than incidental: there is
 # nothing to fan out over in a one-file job, so rungs 01-03 could not show this
 # construct and this rung cannot be run on their spec.
 #
@@ -30,7 +30,7 @@
 name: 04-plan-and-fan-out
 
 seeds:
-  spec: "@../../fixtures/scaffold-calc/spec.md"
+  spec: "@../../fixtures/scaffold-todo-cli/spec.md"
   # The same two supporting docs rungs 02 and 03 use, carried here so this rung is
   # readable on its own. They are ordinary seeds; every stage that wants one names
   # it in its prompt.

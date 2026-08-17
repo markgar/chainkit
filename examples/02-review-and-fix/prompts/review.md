@@ -17,9 +17,9 @@ Reply with **JSON and nothing else**, in exactly this shape:
   "pass": false,
   "findings": [
     {
-      "where": "src/duration.js:12",
-      "what": "parseDuration('1ms') returns 60000 — it matches 'm' before 'ms'",
-      "how": "match units longest-first"
+      "where": "src/todos.js:24",
+      "what": "toggleTodo mutates the todo in place, so the caller's old list changes too",
+      "how": "copy the array and replace the one todo with a new object"
     }
   ]
 }

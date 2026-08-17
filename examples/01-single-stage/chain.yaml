@@ -15,7 +15,7 @@ name: 01-single-stage
 # resolved relative to THIS file, so a spec lives on disk instead of being
 # pasted into config.
 seeds:
-  spec: "@../../fixtures/scaffold-duration/spec.md"
+  spec: "@../../fixtures/scaffold-todos/spec.md"
 
 # Folded into every stage that does not override them. Keeping `model` OUT of
 # defaults is deliberate: which model runs a stage is the most consequential

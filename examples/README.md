@@ -4,10 +4,10 @@ Four chains, in order. Each rung adds **exactly one construct** to the one below
 
 | rung | shape | what it adds | job |
 | --- | --- | --- | --- |
-| [01-single-stage](01-single-stage/) | `code` | the whole kernel, minimally | `duration` |
-| [02-review-and-fix](02-review-and-fix/) | `code → review → fix` | artifacts between stages; `expects`; supporting docs | `duration` |
-| [03-bounded-loop](03-bounded-loop/) | `code → (review → fix)*` | `loop` — repeat until a field is true | `duration` |
-| [04-plan-and-fan-out](04-plan-and-fan-out/) | `(plan → plan-review)* → per chunk: (code → review → fix)*` | `foreach` — run stages per array element | `calc` |
+| [01-single-stage](01-single-stage/) | `code` | the whole kernel, minimally | `todos` |
+| [02-review-and-fix](02-review-and-fix/) | `code → review → fix` | artifacts between stages; `expects`; supporting docs | `todos` |
+| [03-bounded-loop](03-bounded-loop/) | `code → (review → fix)*` | `loop` — repeat until a field is true | `todos` |
+| [04-plan-and-fan-out](04-plan-and-fan-out/) | `(plan → plan-review)* → per chunk: (code → review → fix)*` | `foreach` — run stages per array element | `todo-cli` |
 
 Each directory is **self-contained**: its `chain.yaml`, every prompt it uses, any supporting document it seeds (`docs/`), and a README explaining what that rung is for and how to run it. Nothing is shared between rungs except the graders under [`../fixtures/`](../fixtures/), which are the objective definition of done and are shared because the whole point is that two rungs are graded identically.
 
@@ -22,7 +22,7 @@ Rung 02 is the one exception to "exactly one construct": it adds the review stag
 Every rung scaffolds from an **empty** repo: the working directory starts with only the fixture's `acceptance/` grader, committed. Prepare one, then run:
 
 ```bash
-node prep-workdir.mjs --fixture scaffold-duration --workdir /tmp/ck-01
+node prep-workdir.mjs --fixture scaffold-todos --workdir /tmp/ck-01
 node run.mjs --chain examples/01-single-stage/chain.yaml --workdir /tmp/ck-01
 ```
 

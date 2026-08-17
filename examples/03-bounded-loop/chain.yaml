@@ -17,7 +17,7 @@
 name: 03-bounded-loop
 
 seeds:
-  spec: "@../../fixtures/scaffold-duration/spec.md"
+  spec: "@../../fixtures/scaffold-todos/spec.md"
   # Same two supporting docs as rung 02, byte-identical, for the same reason the
   # prompts are: the only thing that may differ between these two rungs is the loop.
   conventions: "@docs/conventions.md"

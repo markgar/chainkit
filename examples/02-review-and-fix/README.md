@@ -28,7 +28,7 @@ This rung introduces `docs/conventions.md` (the standard the builder writes to) 
 ## Run it
 
 ```bash
-node prep-workdir.mjs --fixture scaffold-duration --workdir /tmp/ck-02
+node prep-workdir.mjs --fixture scaffold-todos --workdir /tmp/ck-02
 node run.mjs --chain examples/02-review-and-fix/chain.yaml --workdir /tmp/ck-02
 ```
 

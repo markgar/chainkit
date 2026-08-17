@@ -1,42 +1,51 @@
 // Does the grader actually admit a correct solution?
 //
-// Same job as scaffold-calc's check, and the same reason: a wrong oracle is the
-// worst failure a harness can have, because every process fails and none of the
-// failures say anything about the process.
+// The acceptance suites are the oracle for this job, and a wrong oracle is the
+// worst failure a harness can have: every process fails, none of them for a reason
+// that says anything about the process.
 //
 // `reference/` is NEVER copied into a run's workdir (prep-workdir.mjs copies only
-// `acceptance/` and `base/`), so no process can see the answer.
+// `acceptance/`), so no process can see the answer.
 //
-// This fixture is a DIAMOND -- match and build both consume what compile produces,
-// and router composes all three -- so the independence claim matters more here than
-// it did for the linear calc pipeline. Chunks 1-3 are each graded with ONLY their
-// own file present. That is what forces the compiled-route shape to be written down
-// in the spec rather than discovered by reading a neighbour's code.
+// This fixture is graded PER MODULE because the fan-out gates each chunk on its own
+// command, so each suite is also checked ON ITS OWN here -- a suite that only passes
+// once every module exists would be useless as a chunk gate, and running them all
+// together would hide that.
 import { execFileSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
+// Which modules each suite needs. Deliberately MINIMAL: chunks 1-3 are graded with
+// only their own file present, which is the strong claim -- a suite that quietly
+// needed a neighbouring module would blame chunk 2 for chunk 1's defect, and
+// per-chunk blame is the entire reason to gate per chunk. Only the integration
+// suite legitimately needs all four.
 const SUITES = [
-  ["compile", ["compile.js"]],
-  ["match", ["match.js"]],
-  ["build", ["build.js"]],
-  ["router", ["compile.js", "match.js", "build.js", "router.js"]],
+  ["parse", ["parse.js"]],
+  ["store", ["store.js"]],
+  ["render", ["render.js"]],
+  ["cli", ["parse.js", "store.js", "render.js", "app.js"]],
 ];
 
 let failed = 0;
 let totalPass = 0;
 
 for (const [suite, modules] of SUITES) {
-  const dir = mkdtempSync(path.join(tmpdir(), `grader-router-${suite}-`));
+  const dir = mkdtempSync(path.join(tmpdir(), `grader-todo-cli-${suite}-`));
   try {
     mkdirSync(path.join(dir, "src"), { recursive: true });
     cpSync(path.join(here, "acceptance"), path.join(dir, "acceptance"), { recursive: true });
-    cpSync(path.join(here, "base"), dir, { recursive: true });
+    // ONLY the modules that suite legitimately needs. Copying all four would prove
+    // the suite passes on a finished package, which is not the question.
     for (const m of modules) cpSync(path.join(here, "reference", m), path.join(dir, "src", m));
+    writeFileSync(
+      path.join(dir, "package.json"),
+      JSON.stringify({ name: "todo-cli", type: "module" }, null, 2),
+    );
 
     const cmd = `node --test acceptance/${suite}.test.js`;
     const out = execFileSync("bash", ["-o", "pipefail", "-c", cmd], { cwd: dir, encoding: "utf8" });
@@ -48,7 +57,7 @@ for (const [suite, modules] of SUITES) {
     }
     totalPass += Number(pass);
     console.log(
-      `  ✓ ${suite.padEnd(8)} ${String(pass).padStart(2)} test(s) pass with only [${modules.join(", ")}]`,
+      `  ✓ ${suite.padEnd(9)} ${String(pass).padStart(2)} test(s) pass with only [${modules.join(", ")}]`,
     );
   } catch (err) {
     failed++;
