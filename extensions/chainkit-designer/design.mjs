@@ -59,9 +59,17 @@ async function kernel(root) {
 // there are two conventions in the wild and both are legitimate: a repo that keeps
 // `chains/*.yaml` side by side, and the examples here, which keep one chain and its
 // own prompts per directory so a reader gets a whole worked process in one place.
-// Skipping dot-directories is also what stops CI workflow YAML being offered as a
-// chain.
+// A chain file is EITHER `chain.yaml` in its own directory OR any yaml inside a
+// directory named `chains/`. That is a stated convention rather than a blocklist:
+// "any .yaml under the root" is greedy enough to offer a lockfile or a CI workflow
+// as a chain, and skipping dot-directories only hides half of that.
 const SKIP = new Set(["node_modules", "results", "fixtures", "kernel", "extensions"]);
+function isChainFile(full) {
+  if (!/\.ya?ml$/i.test(full)) return false;
+  const base = path.basename(full).toLowerCase();
+  if (base === "chain.yaml" || base === "chain.yml") return true;
+  return path.basename(path.dirname(full)) === "chains";
+}
 function findChainFiles(dir, out = []) {
   if (!existsSync(dir)) return out;
   for (const name of readdirSync(dir).sort()) {
@@ -75,7 +83,7 @@ function findChainFiles(dir, out = []) {
     if (st.isDirectory()) {
       if (name.startsWith(".") || SKIP.has(name)) continue;
       findChainFiles(full, out);
-    } else if (/\.ya?ml$/i.test(name)) out.push(full);
+    } else if (isChainFile(full)) out.push(full);
   }
   return out;
 }

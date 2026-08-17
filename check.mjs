@@ -94,8 +94,22 @@ function findFiles(dir, test, out = []) {
   return out;
 }
 
+// A chain file is EITHER `chain.yaml` in its own directory (this repo's examples)
+// OR any yaml inside a directory named `chains/` (the shape a host repo keeps).
+// This is a stated convention, not a blocklist: "every .yaml under the root" is
+// greedy enough to swallow a lockfile or a CI workflow and then fail the gate with
+// "unknown key: lockfileVersion", which reads as a broken chain rather than as a
+// file that was never a chain. CI caught exactly that; a dev tree without a
+// lockfile could not.
+function isChainFile(full) {
+  if (!/\.ya?ml$/i.test(full)) return false;
+  const base = path.basename(full).toLowerCase();
+  if (base === "chain.yaml" || base === "chain.yml") return true;
+  return path.basename(path.dirname(full)) === "chains";
+}
+
 function checkChainRoot(root) {
-  const files = findFiles(root, (f) => f.endsWith(".yaml") || f.endsWith(".yml"));
+  const files = findFiles(root, isChainFile);
   if (files.length === 0) return [];
   const problems = [];
   const used = new Set();
