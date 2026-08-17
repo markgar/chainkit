@@ -191,20 +191,17 @@ function cliComplete({
     // 5.71 AiU per call, buying nothing. Against a review phase measured at
     // ~61 AiU per run, the overhead alone is roughly a third of judge spend.
     //
-    // What was being loaded: `.github/copilot-instructions.md`, which is trellis's
-    // OPERATIONAL doc -- dev-loop ports, seeding commands, Azure deploy
-    // discipline. None of it helps decompose a spec, author an acceptance
-    // command, or grade a diff. It is not merely wasted, it competes: a reviewer
-    // carrying a second, unrelated doctrine is being pulled away from the rubric
-    // it was actually given. Plus the built-in GitHub MCP server, whose tool
-    // definitions are loaded into the system prompt of a call that runs with
-    // `--available-tools ""` and therefore cannot invoke a single one of them.
+    // What was being loaded: the host repo's own agent instructions file -- in the
+    // measured case ~30KB of dev-loop ports, seeding commands and deploy
+    // discipline. None of that helps partition a spec, author an acceptance
+    // command, or grade a diff. And it is not merely wasted: it COMPETES. A
+    // reviewer carrying a second, unrelated doctrine is being pulled away from the
+    // rubric it was actually handed. Loaded alongside it are the built-in MCP
+    // servers, whose tool definitions land in the system prompt of a call that
+    // runs with `--available-tools ""` and therefore cannot invoke a single one.
     //
-    // Scope: reasoning roles only (planner, contract author, reviewer). The
-    // BUILDER spawns through lib/runner.mjs and is deliberately left alone --
-    // whether flash is helped or taxed by 30KB of repo instructions is a real
-    // open question and a separate experiment, and changing both at once would
-    // confound it.
+    // A stage prompt should be the ONLY instruction a stage receives. Anything the
+    // environment injects is a second, invisible prompt that no chain declared.
     args.push("--no-custom-instructions", "--disable-builtin-mcps");
     // Tools are OFF by default: a pure reasoning call that cannot read the repo
     // is cheaper and has no side effects. But a call asked to guarantee something

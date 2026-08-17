@@ -1,0 +1,56 @@
+# 02-review-and-fix — build it, have a DIFFERENT model look, repair once.
+#
+# Exactly one construct added to rung 01: a second and third stage, and the
+# artifact that carries a value between them. Same job, same spec, same builder,
+# same grader, same gate -- so any difference in delivery rate against 01 is
+# attributable to the review and the fix, and to nothing else.
+#
+# `prompts/code.md` is byte-identical to rung 01's on purpose. If you edit one,
+# edit both, or the ladder stops measuring what it claims to.
+#
+# The reviewer is a DIFFERENT MODEL FAMILY on purpose. A model reviewing its own
+# output shares its own blind spots, so it mostly confirms what it already did.
+# Decorrelation is the point of the stage; a same-family reviewer is close to a
+# no-op you pay for.
+
+name: 02-review-and-fix
+
+seeds:
+  spec: "@../../fixtures/scaffold-duration/spec.md"
+
+defaults:
+  effort: high
+  timeoutMs: 1800000
+
+stages:
+  - id: code
+    prompt: prompts/code.md
+    # Still no `produces`: the product is the tree. The reviewer reads the REPO,
+    # not the builder's account of it -- deliberately, so a confident, wrong
+    # self-report cannot steer the review.
+    model: mai-code-1.1-flash
+    tools: true
+
+  - id: review
+    prompt: prompts/review.md
+    produces: verdict # available downstream as {{verdict}}
+    parse: json
+    # The contract this stage must honour. Prompts are the part of a chain people
+    # edit, and a reworded reviewer that starts answering {"passed": true} would
+    # otherwise fail SILENTLY -- `fix` would render a verdict of the wrong shape
+    # and carry on. Checked the moment the artifact is produced.
+    expects:
+      pass: boolean
+      findings: array
+    model: gpt-5.6-sol
+    tools: true # it runs the tests itself instead of taking the builder's word
+
+  - id: fix
+    prompt: prompts/fix.md
+    model: mai-code-1.1-flash
+    tools: true
+
+# Note what this rung does NOT have: the fix runs exactly once, and it runs even
+# when the review passed. Making the repair conditional and repeatable is the
+# next rung's one added construct.
+gate: "git diff --quiet HEAD -- acceptance && node --test acceptance/*.test.js"

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // chainkit — run a chain defined entirely by config.
 //
-//   node run.mjs --chain chains/solo-code.json --workdir /abs/path [--tag t1]
+//   node run.mjs --chain examples/01-single-stage/chain.yaml --workdir /abs/path [--tag t1]
 //
 // The kernel is generic: it calls the CLI, renders prompts from an artifact store,
 // gathers telemetry, records the run, and runs the declared gate. WHICH models, in
@@ -82,12 +82,13 @@ const resultsRoot = path.resolve(
     process.env.CHAINKIT_RESULTS ||
     path.join(path.dirname(path.resolve(chainFile)), "..", "results"),
 );
-// LAYOUT IS DELIBERATELY flash-chain's, not a new one: results/chain-runs/logs/
-// <runId>/<stageDir>/<label>.jsonl plus results/chain-runs/<runId>.json. The
-// canvas and its AiU accounting already read exactly this, and that accounting
-// is the most expensive thing either project owns. Conforming to it costs one
-// path; a new layout would cost a reader rewrite and a second chance to get the
-// cumulative-snapshot arithmetic wrong.
+// THE ON-DISK LAYOUT IS FIXED AND WORTH KNOWING: results/chain-runs/logs/<runId>/
+// <stageDir>/<label>.jsonl for the raw per-stage streams, plus one
+// results/chain-runs/<runId>.json record per run. The run canvas and the AiU
+// accounting inside it read exactly this. That accounting is the subtlest code
+// here -- cumulative snapshots that are easy to sum twice -- so anything that
+// changes the layout also buys a reader rewrite and a fresh chance to get the
+// arithmetic wrong.
 const logRoot = path.join(resultsRoot, "chain-runs", "logs", runId);
 
 // SEEDS are the artifacts the chain starts with. A seed whose value is a path is

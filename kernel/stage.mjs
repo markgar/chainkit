@@ -135,8 +135,10 @@ export async function runStage({
 
   // A TIMEOUT IS NOT AN ANSWER. The child is killed and resolves through the normal
   // close path, so without this the caller sees only partial text and reports
-  // whatever that text fails to be -- flash-chain once reported "could not parse
-  // chunks: Unexpected token 'G'" for a stage that had simply hit its cap.
+  // whatever that text fails to be. A predecessor of this engine once reported
+  // "could not parse chunks: Unexpected token 'G'" for a stage that had simply hit
+  // its time cap -- a diagnosis that sent the reader to the prompt instead of the
+  // clock.
   if (r.timedOut) {
     return {
       ok: false,

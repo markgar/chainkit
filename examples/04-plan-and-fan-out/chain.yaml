@@ -1,0 +1,121 @@
+# 04-plan-and-fan-out — partition the work, then build each piece separately.
+#
+# The last rung, and the one that adds the most: a design phase in its own outer
+# loop, and a `foreach` that runs the build/review/fix triple ONCE PER CHUNK with
+# its own bounded loop and its own gate.
+#
+# The job changes here, from the single-module `duration` package to the
+# four-module `calc` package. That is deliberate rather than incidental: there is
+# nothing to fan out over in a one-file job, so rungs 01-03 could not show this
+# construct and this rung cannot be run on their spec.
+#
+# WHAT THIS RUNG IS REALLY TESTING is whether fan-out is CONFIG. The kernel does
+# not know what a "chunk" is: `over` names an array, `as` binds one element, and
+# the prompts decide what that element means. If expressing this had needed a
+# kernel change, the schema would have been wrong.
+#
+# Two decisions worth naming, because they are what make a run measurable:
+#
+#   THE GATE IS PER CHUNK. `{{chunk.acceptance}}` is that chunk's own grader
+#   command, so every element gets an objective pass/fail at the moment it is
+#   built, and a failure is attributed to the chunk that caused it. A single gate
+#   at the end can only say "the package is red" -- about all chunks at once,
+#   after paying for all of them.
+#
+#   THE PLAN REVIEW HAS TEETH. plan and plan-review sit in the outer loop with
+#   `until: planVerdict.pass`, so a blocking critique forces a RE-PLAN rather than
+#   being advice nobody reads. A bad plan is the most expensive artifact in the
+#   chain: it is transcribed faithfully, chunk by chunk, at full price.
+
+name: 04-plan-and-fan-out
+
+seeds:
+  spec: "@../../fixtures/scaffold-calc/spec.md"
+  # SEEDED WITH A SENTINEL on purpose. A `{{placeholder}}` with no artifact
+  # behind it is a hard error, so without this the planner's first render would
+  # fail -- on round one there is no prior review to show it. On round two the
+  # real critique overwrites this string.
+  planVerdict: "(none — this is the first attempt at a plan)"
+
+defaults:
+  effort: high
+  timeoutMs: 1800000
+
+stages:
+  # ---- design (the outer loop) -------------------------------------------
+  - id: plan
+    prompt: prompts/plan.md
+    produces: plan
+    parse: json
+    expects:
+      chunks: array # the fan-out iterates this; a plan without it cannot drive one
+    model: gpt-5.6-sol # partitioning by risk is the judgment call in this chain
+    tools: true # it must read the real grader before partitioning
+
+  - id: plan-review
+    prompt: prompts/plan-review.md
+    produces: planVerdict
+    parse: json
+    expects:
+      pass: boolean # this field breaks the outer loop, so it must exist
+    model: claude-opus-4.8 # DECORRELATED from the planner on purpose
+    tools: false
+
+  # ---- build (once per chunk) --------------------------------------------
+  - id: code
+    prompt: prompts/code.md
+    produces: buildNotes
+    parse: text
+    model: mai-code-1.1-flash # cheap builder: it transcribes a blueprint it did not invent
+    tools: true
+
+  - id: review
+    prompt: prompts/review.md
+    produces: verdict
+    parse: json
+    expects:
+      pass: boolean
+    model: gpt-5.6-sol
+    tools: true # it runs the chunk's tests itself rather than trusting the builder
+
+  - id: fix
+    prompt: prompts/fix.md
+    produces: fixNotes
+    parse: text
+    model: mai-code-1.1-flash
+    tools: true
+    resume: true # continue the builder's own session for THIS chunk
+
+loop:
+  stages: [plan, plan-review]
+  until: planVerdict.pass
+  max:
+    2 # one re-plan. A planner that cannot satisfy its reviewer twice is not
+    # going to on the third try, and the chunks are what gets billed.
+
+foreach:
+  over: plan.chunks # the array produced by `plan`
+  as: chunk # each element is bound as {{chunk.*}} inside these stages
+  stages: [code, review, fix]
+  # The ELEMENT's contract. `expects` on a stage checks an artifact; this checks
+  # the shape of every item the fan-out iterates, before any of them is built --
+  # so a planner that renamed a field fails free rather than eight times over.
+  expects:
+    id: string
+    files: array
+    acceptance:
+      string # rendered into the gate below. Absent would mean an EMPTY
+      # shell command, and an empty shell command SUCCEEDS -- every
+      # chunk would be graded green by a gate that ran nothing.
+    blueprint: string
+  loop:
+    stages: [review, fix]
+    until: verdict.pass
+    max: 3
+  gate: "{{chunk.acceptance}}"
+  max: 8 # refuse an oversized plan rather than silently truncating it
+
+# The chain gate runs the WHOLE grader. Every chunk already passed its own suite,
+# so this exists to catch what per-chunk grading structurally cannot: modules that
+# are each correct and wired together wrong.
+gate: bash -o pipefail -c "git diff --quiet HEAD -- acceptance && node --test acceptance/*.test.js"

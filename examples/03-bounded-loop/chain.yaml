@@ -1,0 +1,61 @@
+# 03-bounded-loop — review and repair REPEATEDLY, until a named field says stop.
+#
+# Exactly one construct added to rung 02: `loop`. Same job, same spec, same
+# builder, same reviewer, same grader, same gate. The only difference is that
+# review and fix now repeat until the reviewer passes the work, instead of
+# running once each regardless.
+#
+# The three prompts are byte-identical to rung 02's. Keep them that way, or the
+# comparison between the two rungs stops being attributable.
+#
+# CONTROL FLOW IN THIS ENGINE IS EXACTLY TWO THINGS: stages run in order, and one
+# bounded loop repeats a subset until a named artifact field is true. There is no
+# `if`, no `goto`, no stage that decides what runs next. A process that cannot be
+# expressed with those two things is a process this engine will not run -- which
+# is the constraint that keeps "adding a stage is config" true.
+
+name: 03-bounded-loop
+
+seeds:
+  spec: "@../../fixtures/scaffold-duration/spec.md"
+
+defaults:
+  effort: high
+  timeoutMs: 1800000
+
+stages:
+  - id: code
+    prompt: prompts/code.md
+    model: mai-code-1.1-flash
+    tools: true
+
+  - id: review
+    prompt: prompts/review.md
+    produces: verdict
+    parse: json
+    expects:
+      pass: boolean # THIS field breaks the loop below, so it must exist
+      findings: array
+    model: gpt-5.6-sol
+    tools: true
+
+  - id: fix
+    prompt: prompts/fix.md
+    model: mai-code-1.1-flash
+    tools: true
+    resume:
+      true # CONTINUE the builder's own session rather than starting a fresh
+      # one. It keeps the context it already paid for, and the re-sent
+      # input is served as cache-read. Across three rounds that is the
+      # difference between one conversation and three cold starts.
+
+loop:
+  stages: [review, fix]
+  until: verdict.pass # the field named in `expects` above
+  max:
+    3 # BOUNDED, and the bound is not a formality: a reviewer that never
+    # passes is the failure mode that spends without limit. Hitting the
+    # bound is recorded in the run record as an unsatisfied loop, so a
+    # run that thrashed is distinguishable from one that converged.
+
+gate: "git diff --quiet HEAD -- acceptance && node --test acceptance/*.test.js"

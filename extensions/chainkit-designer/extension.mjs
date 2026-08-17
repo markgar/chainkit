@@ -81,7 +81,7 @@ const session = await joinSession({
           chain: {
             type: "string",
             description:
-              "Chain file to show: a name in chains/ (e.g. 'solo-code'), or an absolute path. Defaults to the first chain found.",
+              "Chain file to show: a name or path relative to a chain root (e.g. '04-plan-and-fan-out'), or an absolute path. Defaults to the first chain found.",
           },
         },
         additionalProperties: false,

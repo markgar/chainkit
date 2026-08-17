@@ -68,6 +68,12 @@ mk("vendor/chainkit/chains/engine-example.yaml", "name: engine-example\n");
 mk(".chainkit/chains/project-thing.yaml", "name: project-thing\n");
 mk(".chainkit/chains/other.yml", "name: other\n");
 mk(".chainkit/chains/notes.md", "not a chain");
+// The OTHER layout, which the engine's own examples use: one directory per chain,
+// each holding its chain file and its own prompts. Both must be discoverable.
+mk("vendor/chainkit/examples/02-two/chain.yaml", "name: two\n");
+mk("vendor/chainkit/examples/02-two/prompts/code.md", "a prompt, not a chain");
+// Skipped on purpose: CI config is YAML and lives in a dot-directory.
+mk("vendor/chainkit/.github/workflows/ci.yml", "name: CI\n");
 
 const roots = chainRoots(null, null, { base: tmp });
 eq("both chain roots are found, not just the first", roots.length, 2);
@@ -77,13 +83,26 @@ eq(
   [".chainkit", "chainkit"],
 );
 eq(
-  "chains from every root are listed together",
-  listChains(roots).map((c) => c.name),
-  ["engine-example.yaml", "other.yml", "project-thing.yaml"],
+  // Names are root-RELATIVE, not basenames: the examples layout gives every chain
+  // the filename `chain.yaml`, so a basename label would render them identical in
+  // the picker and the user could not tell which one they were opening.
+  "chains from every root and both layouts are listed together, by relative path",
+  listChains(roots).map((c) => c.name.split(path.sep).join("/")),
+  [
+    "chains/engine-example.yaml",
+    "chains/other.yml",
+    "chains/project-thing.yaml",
+    "examples/02-two/chain.yaml",
+  ],
 );
 eq(
-  "a non-chain file in chains/ is not offered as a chain",
-  listChains(roots).some((c) => c.name === "notes.md"),
+  "a non-chain file is not offered as a chain",
+  listChains(roots).some((c) => c.name.endsWith(".md")),
+  false,
+);
+eq(
+  "YAML inside a dot-directory is not mistaken for a chain",
+  listChains(roots).some((c) => c.name.includes("ci.yml")),
   false,
 );
 eq(
@@ -93,8 +112,15 @@ eq(
 );
 eq(
   "a chain is resolvable by bare name, from whichever root holds it",
-  path.relative(tmp, resolveChainFile(roots, "project-thing")),
+  path.relative(tmp, resolveChainFile(roots, "chains/project-thing")),
   path.join(".chainkit", "chains", "project-thing.yaml"),
+);
+eq(
+  // How the examples are actually referred to out loud. Every one of their files
+  // is `chain.yaml`, so the directory is the only name a human would use.
+  "a chain is resolvable by its containing directory's name",
+  path.relative(tmp, resolveChainFile(roots, "02-two")),
+  path.join("vendor", "chainkit", "examples", "02-two", "chain.yaml"),
 );
 eq(
   "an explicit root overrides discovery -- the panel shows what it was asked for",

@@ -3,8 +3,8 @@
 // lives in its own repo, and what the host repo's done-bar runs in the meantime.
 //
 // It ships WITH the engine rather than sitting in the host repo's scripts, on the
-// same principle as everything else in this directory: extract chainkit to its own
-// repo and its gate comes along, unchanged. Nothing here knows the word "trellis".
+// same principle as everything else in this directory: vendor chainkit into a repo
+// and its gate comes along, unchanged. Nothing here knows anything about the host.
 //
 // The selftests are the load-bearing part. prettier and eslint check shape; the
 // selftests are the only thing that checks BEHAVIOUR, and they have caught defects
@@ -18,7 +18,7 @@
 // required -- a missing canvas is reported, not fatal.
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadChain, warnChain } from "./kernel/config.mjs";
@@ -74,14 +74,33 @@ const canvases = canvasNames
 // only ever examples -- the chains a host repo actually runs live in the host, and
 // they are the ones whose breakage costs real money. `--chains <dir>` (repeatable)
 // lets the host add its own without the engine learning anything about the host.
+//
+// Discovery is RECURSIVE and layout-agnostic: any .yaml/.yml under the root is a
+// chain, and any .md inside a directory named `prompts` is a prompt. That covers
+// both shapes without the gate having to know either -- the examples here keep one
+// chain and its own prompts per directory, while a host repo usually keeps
+// `chains/` and `prompts/` side by side. Dot-directories are skipped, which is also
+// what keeps CI workflow YAML from being read as a chain.
+const SKIP_DIRS = new Set(["node_modules", "results", "fixtures"]);
+function findFiles(dir, test, out = []) {
+  if (!existsSync(dir)) return out;
+  for (const name of readdirSync(dir).sort()) {
+    const full = path.join(dir, name);
+    if (statSync(full).isDirectory()) {
+      if (name.startsWith(".") || SKIP_DIRS.has(name)) continue;
+      findFiles(full, test, out);
+    } else if (test(full)) out.push(full);
+  }
+  return out;
+}
+
 function checkChainRoot(root) {
-  const dir = path.join(root, "chains");
-  if (!existsSync(dir)) return [];
-  const files = readdirSync(dir).filter((f) => f.endsWith(".yaml") || f.endsWith(".yml"));
+  const files = findFiles(root, (f) => f.endsWith(".yaml") || f.endsWith(".yml"));
+  if (files.length === 0) return [];
   const problems = [];
   const used = new Set();
-  for (const f of files) {
-    const full = path.join(dir, f);
+  for (const full of files) {
+    const f = path.relative(root, full);
     let loaded;
     try {
       loaded = loadChain(full);
@@ -98,10 +117,11 @@ function checkChainRoot(root) {
     for (const s of loaded.chain.stages || [])
       if (s.prompt) used.add(path.resolve(loaded.promptRoot, s.prompt));
   }
-  const promptDir = path.join(root, "prompts");
-  if (existsSync(promptDir))
-    for (const p of readdirSync(promptDir).filter((f) => f.endsWith(".md")))
-      if (!used.has(path.join(promptDir, p))) problems.push(`prompts/${p}: no chain references it`);
+  for (const p of findFiles(
+    root,
+    (f) => f.endsWith(".md") && path.basename(path.dirname(f)) === "prompts",
+  ))
+    if (!used.has(p)) problems.push(`${path.relative(root, p)}: no chain references it`);
   return problems.map((p) => `${path.relative(hostRoot, root) || "."}/${p}`);
 }
 

@@ -20,9 +20,9 @@ const repoRoot = path.resolve(here, "..", "..", "..");
 
 // TWO DIFFERENT ROOTS, and conflating them is the bug. The ENGINE root holds
 // `kernel/` -- it is vendored, replaced wholesale, and there is exactly one. The
-// CHAIN roots hold `chains/` -- `.chainkit/` is the processes this repo runs and
-// `vendor/chainkit/chains/` is the engine's own examples, and both are real. The
-// designer validates a chain from either root using the one engine.
+// CHAIN roots hold chain files -- `.chainkit/` is the processes this repo runs and
+// `vendor/chainkit/` is the engine's own examples, and both are real. The designer
+// validates a chain from either root using the one engine.
 export function engineRoot(workspacePath, { base = repoRoot } = {}) {
   for (const b of [base, workspacePath, process.cwd()]) {
     if (!b) continue;
@@ -39,7 +39,7 @@ export function chainRoots(workspacePath, input, { base = repoRoot } = {}) {
     if (!b) continue;
     for (const rel of [".chainkit", path.join("vendor", "chainkit")]) {
       const cand = path.join(b, rel);
-      if (existsSync(path.join(cand, "chains")) && !out.includes(cand)) out.push(cand);
+      if (findChainFiles(cand).length && !out.includes(cand)) out.push(cand);
     }
   }
   return out.length ? out : [path.join(base, ".chainkit")];
@@ -55,15 +55,40 @@ async function kernel(root) {
   return import(`${url}?t=${Date.now()}`);
 }
 
+// Chain files are found RECURSIVELY rather than in one fixed directory, because
+// there are two conventions in the wild and both are legitimate: a repo that keeps
+// `chains/*.yaml` side by side, and the examples here, which keep one chain and its
+// own prompts per directory so a reader gets a whole worked process in one place.
+// Skipping dot-directories is also what stops CI workflow YAML being offered as a
+// chain.
+const SKIP = new Set(["node_modules", "results", "fixtures", "kernel", "extensions"]);
+function findChainFiles(dir, out = []) {
+  if (!existsSync(dir)) return out;
+  for (const name of readdirSync(dir).sort()) {
+    const full = path.join(dir, name);
+    let st;
+    try {
+      st = statSync(full);
+    } catch {
+      continue; // a broken symlink is not a chain
+    }
+    if (st.isDirectory()) {
+      if (name.startsWith(".") || SKIP.has(name)) continue;
+      findChainFiles(full, out);
+    } else if (/\.ya?ml$/i.test(name)) out.push(full);
+  }
+  return out;
+}
+
 export function listChains(root) {
   const roots = Array.isArray(root) ? root : [root];
   if (roots.length > 1)
     return roots.flatMap((r) => listChains(r)).sort((a, b) => a.name.localeCompare(b.name));
-  const dir = path.join(roots[0], "chains");
-  if (!existsSync(dir)) return [];
-  return readdirSync(dir)
-    .filter((n) => /\.ya?ml$/i.test(n))
-    .map((n) => ({ name: n, file: path.join(dir, n) }))
+  // The NAME is the path relative to its root, so two chains both called
+  // `chain.yaml` in different example directories stay distinguishable in the
+  // picker -- which they would not be if the basename were the label.
+  return findChainFiles(roots[0])
+    .map((file) => ({ name: path.relative(roots[0], file), file }))
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
@@ -72,8 +97,13 @@ export function resolveChainFile(roots, want) {
   const chains = listChains(all);
   if (!want) return chains[0]?.file || null;
   if (path.isAbsolute(want)) return want;
-  const hit = chains.find((c) => c.name === want || c.name.replace(/\.ya?ml$/i, "") === want);
-  return hit ? hit.file : path.join(all[0], "chains", want);
+  const norm = (n) => n.replace(/\.ya?ml$/i, "");
+  const hit =
+    chains.find((c) => c.name === want || norm(c.name) === want) ||
+    // Also accept the containing directory's name, which is how the examples read
+    // aloud ("04-plan-and-fan-out") even though every file in them is chain.yaml.
+    chains.find((c) => path.basename(path.dirname(c.file)) === want);
+  return hit ? hit.file : path.join(all[0], want);
 }
 
 // Build the DESIGN model: what the chain says it will do, before it does any of it.

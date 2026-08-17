@@ -333,6 +333,30 @@ export function warnChain(chain, { promptRoot, readPrompt = defaultReadPrompt } 
         );
   }
 
+  // A LOOP CONDITION THAT READS A FIELD THE CONTRACT DOES NOT DECLARE. `until:
+  // verdict.pass` and `expects: {pass: boolean}` are two statements about the same
+  // field, written in different places, and nothing made them agree. Rename the
+  // field in one and the loop silently tests `undefined` -- which is falsy, so the
+  // loop never breaks early and simply runs to `max` every time, looking like a
+  // model that could not converge rather than a typo.
+  //
+  // Only checked when the producer DECLARES `expects`: without it there is no
+  // stated contract to contradict, and guessing at an artifact's shape would
+  // produce warnings on chains that are perfectly correct.
+  for (const until of [chain.loop?.until, chain.foreach?.loop?.until].filter(Boolean)) {
+    const [art, ...rest] = String(until).split(".");
+    const field = rest.join(".");
+    if (!field) continue;
+    const producer = stages.find((s) => s.produces === art);
+    if (!producer?.expects || typeof producer.expects !== "object") continue;
+    if (!(field in producer.expects))
+      warnings.push(
+        `loop until reads "${until}", but stage "${producer.id}" declares expects ` +
+          `{${Object.keys(producer.expects).join(", ")}} — no "${field}". The loop would ` +
+          `test undefined and run to max every time.`,
+      );
+  }
+
   // A foreach's `expects` is the same contract one level down -- it describes the
   // ELEMENTS of the array being iterated, so the prompt that has to ask for those
   // fields belongs to whichever stage produces that array, not to the foreach.
@@ -655,6 +679,42 @@ export function selfTest() {
   CASES.push([
     "an unreadable prompt is left to validateChain, not warned about twice",
     wExpects({ pass: "boolean" }, "gone.md").length === 0,
+  ]);
+
+  // `until` vs the `expects` of the stage that produces the artifact it drills into.
+  // The failure this catches is quiet by construction: a field that is not there
+  // reads as undefined, undefined is falsy, and a loop that never breaks early is
+  // indistinguishable from a model that never converged.
+  const wUntil = (until, expects = { pass: "boolean" }) =>
+    W({
+      seeds: { spec: "" },
+      stages: [
+        { id: "code", prompt: "asks.md" },
+        {
+          id: "rev",
+          prompt: "asks.md",
+          produces: "verdict",
+          parse: "json",
+          ...(expects ? { expects } : {}),
+        },
+      ],
+      loop: { stages: ["rev", "code"], until, max: 3 },
+    });
+  CASES.push([
+    "an until whose field the producer declares is not warned about",
+    !wUntil("verdict.pass").some((w) => w.includes("loop until")),
+  ]);
+  CASES.push([
+    "an until reading a field the producer's expects omits is warned about",
+    wUntil("verdict.done").some((w) => w.includes('"verdict.done"') && w.includes('no "done"')),
+  ]);
+  CASES.push([
+    "an until on a producer with no expects is not guessed at",
+    !wUntil("verdict.done", null).some((w) => w.includes("loop until")),
+  ]);
+  CASES.push([
+    "a bare until with no field is left alone -- there is nothing to contradict",
+    !wUntil("verdict").some((w) => w.includes("loop until")),
   ]);
 
   // The foreach's element contract is checked against the PLANNER's prompt, since

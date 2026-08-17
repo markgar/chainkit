@@ -172,7 +172,7 @@ function render(st) {
   const root = document.getElementById("root");
 
   if (!d.exists) {
-    root.innerHTML = \`<div class="empty">No chain file. Create one at <code class="mono">\${esc(st.root)}/chains/&lt;name&gt;.yaml</code>.</div>\`;
+    root.innerHTML = \`<div class="empty">No chain file. Create one at <code class="mono">\${esc(st.root)}/&lt;name&gt;/chain.yaml</code>.</div>\`;
     document.getElementById("meta").textContent = "";
     return;
   }

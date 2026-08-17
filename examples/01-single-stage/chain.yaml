@@ -1,0 +1,42 @@
+# 01-single-stage — build it. One stage. Nothing else.
+#
+# The simplest process that can produce a result, and the baseline every other
+# process here has to beat. If adding stages does not raise the delivery rate
+# above this one, the stages are ceremony.
+#
+# It also exercises the whole kernel with nowhere to hide: config -> prompt ->
+# CLI call -> telemetry -> run record -> gate. If this rung does not work,
+# nothing above it will either.
+
+name: 01-single-stage
+
+# SEEDS are the artifacts the chain starts with -- everything a stage may
+# reference before any stage has run. A leading @ reads the value from a file,
+# resolved relative to THIS file, so a spec lives on disk instead of being
+# pasted into config.
+seeds:
+  spec: "@../../fixtures/scaffold-duration/spec.md"
+
+# Folded into every stage that does not override them. Keeping `model` OUT of
+# defaults is deliberate: which model runs a stage is the most consequential
+# line in a chain, so it is stated per stage where it cannot be missed.
+defaults:
+  effort: high
+  timeoutMs: 1800000 # 30 min -- this stage builds the whole package in one call
+
+stages:
+  - id: code
+    prompt: prompts/code.md
+    # No `produces`. This stage's product is the files it wrote, not a value any
+    # later stage reads, and there is no later stage. Naming an artifact here
+    # would be decoration.
+    model: mai-code-1.1-flash
+    tools: true # it has to be able to read and write the repo
+
+# The chain's own definition of done, run once over the result.
+#
+# TWO clauses, and the first is not optional. `node --test` alone would be a
+# grade awarded by tests the run itself could have rewritten. So the grader is
+# checked unchanged BEFORE it is trusted. A gate that can be edited by the thing
+# it grades is not a gate.
+gate: "git diff --quiet HEAD -- acceptance && node --test acceptance/*.test.js"

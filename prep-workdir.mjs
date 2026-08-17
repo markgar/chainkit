@@ -57,11 +57,11 @@ cpSync(graderDir, path.join(workDir, "acceptance"), { recursive: true });
 // its ownership rule or fails a gate for a reason that says nothing about the chunk.
 const baseDir = path.join(fixtureDir, "base");
 if (existsSync(baseDir)) cpSync(baseDir, workDir, { recursive: true });
-// Tools installed in the operator's environment write their own bookkeeping into
-// the CLI's working directory (the code-chain extension drops `.code-chain/`).
-// That is not work the run did, and counting it as changed files makes the
-// delivery signal dirtier than it is.
-writeFileSync(path.join(workDir, ".gitignore"), ".code-chain/\nnode_modules/\n");
+// Agent tooling installed in the operator's environment writes its own bookkeeping
+// into the CLI's working directory. That is not work the run did, and counting it
+// as changed files makes the delivery signal dirtier than it is. If your tooling
+// drops a directory of its own, add it here.
+writeFileSync(path.join(workDir, ".gitignore"), "node_modules/\n.chainkit/\n");
 
 const git = (...args) => {
   const r = spawnSync("git", args, { cwd: workDir, encoding: "utf8" });
