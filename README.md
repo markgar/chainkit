@@ -19,6 +19,7 @@ Control flow is exactly two things: stages run in order, and one bounded `loop` 
 ## Layout
 
     run.mjs              the driver
+    models.mjs           probe the CLI for which model ids it actually accepts
     check.mjs            the whole gate: format, lint, deadcode, every selftest
     selftest.mjs         deterministic behaviour gate — run after any kernel change
     kernel/
@@ -30,6 +31,7 @@ Control flow is exactly two things: stages run in order, and one bounded `loop` 
       cost.mjs           AiU accounting with the cumulative-snapshot rules
       tree.mjs           working-tree snapshot/delta — a builder's product
       foreach.mjs        fan-out: run a stage list once per element of an array
+      models.mjs         the known model roster + the advisory spell-check over it
     examples/NN-name/    one worked chain per directory: chain.yaml, its prompts, a README
     fixtures/<name>/     greenfield graders — the objective definition of done
     extensions/          the two canvases: a live run dashboard and a chain designer
@@ -50,7 +52,23 @@ The selftests are the load-bearing part: the static checks check shape, the self
     node run.mjs --chain examples/01-single-stage/chain.yaml --validate-only    # free
     node run.mjs --chain examples/01-single-stage/chain.yaml --workdir /abs/path --tag a1
 
-`--validate-only` checks every artifact reference, prompt file, loop bound and stage key without spending anything. It also warns — advisory, never fatal — about the two quiet wiring mistakes: a stage whose output nothing reads, and an `expects` field the prompt is never asked for (including a `foreach`'s element shape, checked against the prompt of whichever stage produces the array). Both of those otherwise cost a full run to discover.
+`--validate-only` checks every artifact reference, prompt file, loop bound and stage key without spending anything. It also warns — advisory, never fatal — about the quiet wiring mistakes: a stage whose output nothing reads, an `expects` field the prompt is never asked for (including a `foreach`'s element shape, checked against the prompt of whichever stage produces the array), and a model id that is not in the known roster. All of those otherwise cost a full run to discover.
+
+## Models
+
+A stage names its model as a bare string, and until it is dispatched nothing checks it. For a stage late in a fan-out that means a typo is discovered _after_ every earlier stage has been paid for. `kernel/models.mjs` carries a roster of ids the CLI is known to accept, and `--validate-only` warns (with a nearest-match suggestion) about anything not in it.
+
+It is a **spell-check, not a gate**, and that is deliberate: chainkit does not own the list. `copilot` does, the set moves as models ship and retire, and it varies by account and org. A hard allowlist would eventually reject a chain naming a model that is real and simply newer than this file — so an unknown id warns and the run proceeds. A stale roster costs a spurious warning; a roster trusted as a gate would block working chains.
+
+The CLI has no enumerate command (`/model` is an interactive picker; there is no `--list`), so the roster is refreshed by asking the binary one id at a time:
+
+    node models.mjs                 probe the built-in candidate list
+    node models.mjs a b c           probe exactly these ids
+    node models.mjs --roster        print a KNOWN_MODELS block to paste into kernel/models.mjs
+
+Every id the probe confirms costs one real inference call, which is exactly why it is a separate tool and **not** part of `--validate-only` — validation is free and must stay that way. The probe reports anything that is not a clean rejection as _inconclusive_ rather than absent, so a network blip is never recorded as a retired model.
+
+`azure:`-prefixed and deepseek ids are routed to Azure Foundry, not the CLI, so the roster check skips them.
 
 ## Examples
 

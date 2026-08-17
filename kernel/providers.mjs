@@ -20,7 +20,12 @@ import path from "node:path";
 // A model id is treated as an Azure Foundry deployment when it looks like one
 // (contains "deepseek") OR the caller passes an explicit provider prefix
 // "azure:<deployment>". Everything else goes to the Copilot CLI.
-function providerFor(model) {
+//
+// Exported because the roster warning in kernel/models.mjs has to ask the same
+// question -- "is this id one the CLI will be asked for?" -- and a second copy of
+// this rule would drift from this one silently, which shows up as a chain warning
+// about a perfectly good Azure deployment.
+export function providerFor(model) {
   if (!model) return { kind: "cli", model };
   if (model.startsWith("azure:")) return { kind: "azure", model: model.slice(6) };
   if (/deepseek/i.test(model)) return { kind: "azure", model };

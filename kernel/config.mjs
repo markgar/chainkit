@@ -11,6 +11,7 @@ import { readFileSync, existsSync } from "node:fs";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import { placeholders, rootOf } from "./context.mjs";
+import { modelWarnings } from "./models.mjs";
 
 // Every key a stage may carry. An unknown key is a HARD ERROR, not a warning.
 //
@@ -374,6 +375,12 @@ export function warnChain(chain, { promptRoot, readPrompt = defaultReadPrompt } 
               `"${fe.over}" (stage "${producer.id}", ${producer.prompt}) never names.`,
           );
   }
+  // A MODEL ID NOTHING WILL ACCEPT. Free to check here; expensive to discover at
+  // dispatch, which for a late fan-out stage is after the whole prefix of the run
+  // has been paid for. Advisory only -- the roster is not ours to be authoritative
+  // about. See kernel/models.mjs.
+  warnings.push(...modelWarnings(chain));
+
   return warnings;
 }
 

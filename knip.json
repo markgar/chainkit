@@ -3,6 +3,7 @@
   "entry": [
     "run.mjs",
     "prep-workdir.mjs",
+    "models.mjs",
     "extensions/*/extension.mjs",
     "extensions/*/selftest.mjs"
   ],

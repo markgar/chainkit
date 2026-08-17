@@ -12,6 +12,7 @@ import { selfTest as stageTests } from "./kernel/stage.mjs";
 import { selfTest as treeTests } from "./kernel/tree.mjs";
 import { selfTest as costTests } from "./kernel/cost.mjs";
 import { selfTest as foreachTests } from "./kernel/foreach.mjs";
+import { selfTest as modelTests } from "./kernel/models.mjs";
 
 // Copied suites print their own output and return a boolean; kernel suites return
 // [label, ok] pairs. Normalise rather than rewriting a suite that already passes --
@@ -30,6 +31,10 @@ const SUITES = [
   // shape? did every element run?) are pure logic that would otherwise sit in the
   // driver untested.
   ["fan-out control flow", foreachTests],
+  // The model roster is advisory, which is exactly why it needs tests: a check
+  // that only ever warns can be quietly wrong for a long time. The cases that
+  // matter are the false-positive ones (azure ids, inherited defaults).
+  ["model roster (advisory)", modelTests],
   ["cost accounting (copied, self-printing)", () => [["cost aggregation", costTests() === true]]],
 ];
 
