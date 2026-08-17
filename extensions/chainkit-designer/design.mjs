@@ -11,7 +11,7 @@
 // a broken read returns a plausible answer. A roots bug here does not throw, it
 // renders a confident, empty, wrong panel -- which is exactly what happened once.
 
-import { existsSync, readFileSync, statSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync, readdirSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
 
@@ -35,11 +35,26 @@ export function engineRoot(workspacePath, { base = repoRoot } = {}) {
 export function chainRoots(workspacePath, input, { base = repoRoot } = {}) {
   if (input?.root) return [path.isAbsolute(input.root) ? input.root : path.join(base, input.root)];
   const out = [];
+  // Dedupe by RESOLVED path, not by the string: the same directory routinely
+  // arrives by two different spellings (a symlinked parent, `.` vs an absolute
+  // base), and a string compare then lists one root twice -- so the picker shows
+  // every chain in it twice and the user cannot tell which entry is which.
+  const seen = new Set();
   for (const b of [base, workspacePath, process.cwd()]) {
     if (!b) continue;
     for (const rel of [".chainkit", path.join("vendor", "chainkit")]) {
       const cand = path.join(b, rel);
-      if (findChainFiles(cand).length && !out.includes(cand)) out.push(cand);
+      let key = cand;
+      try {
+        key = realpathSync(cand);
+      } catch {
+        /* not present; findChainFiles below will say so */
+      }
+      if (seen.has(key)) continue;
+      if (findChainFiles(cand).length) {
+        seen.add(key);
+        out.push(cand);
+      }
     }
   }
   return out.length ? out : [path.join(base, ".chainkit")];

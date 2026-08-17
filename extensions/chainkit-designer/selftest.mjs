@@ -12,6 +12,7 @@
 // it here.
 
 import vm from "node:vm";
+import { realpathSync } from "node:fs";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
@@ -75,8 +76,24 @@ mk("vendor/chainkit/examples/02-two/prompts/code.md", "a prompt, not a chain");
 // Skipped on purpose: CI config is YAML and lives in a dot-directory.
 mk("vendor/chainkit/.github/workflows/ci.yml", "name: CI\n");
 
+// chainRoots also considers the CWD, deliberately -- an operator standing in a
+// repo expects to see that repo's chains. That makes the CWD a leak INTO this
+// test: run from a real host checkout (which is where a vendored copy of this
+// extension runs its selftest), the host's own chains show up alongside the temp
+// tree's and every expectation below is wrong for a reason that is not a defect.
+// So stand in the temp tree for the duration.
+const cwd0 = process.cwd();
+process.chdir(tmp);
 const roots = chainRoots(null, null, { base: tmp });
 eq("both chain roots are found, not just the first", roots.length, 2);
+eq(
+  // Regression: the temp dir arrives as /var/... from `base` and /private/var/...
+  // from the CWD, so a string-compare dedupe kept both and listed every chain
+  // twice. The dedupe is by resolved path for that reason.
+  "a root reachable by two spellings is listed once",
+  new Set(roots.map((r) => realpathSync(r))).size,
+  roots.length,
+);
 eq(
   "the project's own chains come first",
   roots.map((r) => path.basename(r)),
@@ -132,6 +149,8 @@ eq(
   listChains([path.join(tmp, "nowhere")]),
   [],
 );
+
+process.chdir(cwd0);
 
 // The head comment is the design rationale -- the reason chains are YAML at all.
 eq(
