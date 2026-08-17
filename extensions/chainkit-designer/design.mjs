@@ -1,0 +1,175 @@
+// The designer's READ SIDE: find the roots, list the chains, and build the design
+// model from one. No SDK, no server, no HTML -- on purpose.
+//
+// It was all inside extension.mjs, which imports the extension SDK and therefore
+// cannot be loaded outside the extension host. That put the only logic worth
+// testing behind an import nothing could satisfy, and the selftest said so in a
+// scope note rather than covering it. This is the same split the run canvas
+// already had (telemetry.mjs beside its extension.mjs), applied here.
+//
+// The stakes are the usual ones for read-side code: a broken write fails loudly,
+// a broken read returns a plausible answer. A roots bug here does not throw, it
+// renders a confident, empty, wrong panel -- which is exactly what happened once.
+
+import { existsSync, readFileSync, statSync, readdirSync } from "node:fs";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import path from "node:path";
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(here, "..", "..", "..");
+
+// TWO DIFFERENT ROOTS, and conflating them is the bug. The ENGINE root holds
+// `kernel/` -- it is vendored, replaced wholesale, and there is exactly one. The
+// CHAIN roots hold `chains/` -- `.chainkit/` is the processes this repo runs and
+// `vendor/chainkit/chains/` is the engine's own examples, and both are real. The
+// designer validates a chain from either root using the one engine.
+export function engineRoot(workspacePath, { base = repoRoot } = {}) {
+  for (const b of [base, workspacePath, process.cwd()]) {
+    if (!b) continue;
+    const cand = path.join(b, "vendor", "chainkit");
+    if (existsSync(path.join(cand, "kernel"))) return cand;
+  }
+  return path.join(base, "vendor", "chainkit");
+}
+
+export function chainRoots(workspacePath, input, { base = repoRoot } = {}) {
+  if (input?.root) return [path.isAbsolute(input.root) ? input.root : path.join(base, input.root)];
+  const out = [];
+  for (const b of [base, workspacePath, process.cwd()]) {
+    if (!b) continue;
+    for (const rel of [".chainkit", path.join("vendor", "chainkit")]) {
+      const cand = path.join(b, rel);
+      if (existsSync(path.join(cand, "chains")) && !out.includes(cand)) out.push(cand);
+    }
+  }
+  return out.length ? out : [path.join(base, ".chainkit")];
+}
+
+// Load the engine's OWN loader/validator at call time rather than at import time.
+// Imported eagerly, a syntax error in the kernel would take down the whole
+// extension with an opaque startup failure; loaded here, it surfaces as an error
+// in the panel where it can be read.
+async function kernel(root) {
+  const url = pathToFileURL(path.join(root, "kernel", "config.mjs")).href;
+  // Cache-bust so an edited kernel is picked up without restarting the extension.
+  return import(`${url}?t=${Date.now()}`);
+}
+
+export function listChains(root) {
+  const roots = Array.isArray(root) ? root : [root];
+  if (roots.length > 1)
+    return roots.flatMap((r) => listChains(r)).sort((a, b) => a.name.localeCompare(b.name));
+  const dir = path.join(roots[0], "chains");
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
+    .filter((n) => /\.ya?ml$/i.test(n))
+    .map((n) => ({ name: n, file: path.join(dir, n) }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export function resolveChainFile(roots, want) {
+  const all = Array.isArray(roots) ? roots : [roots];
+  const chains = listChains(all);
+  if (!want) return chains[0]?.file || null;
+  if (path.isAbsolute(want)) return want;
+  const hit = chains.find((c) => c.name === want || c.name.replace(/\.ya?ml$/i, "") === want);
+  return hit ? hit.file : path.join(all[0], "chains", want);
+}
+
+// Build the DESIGN model: what the chain says it will do, before it does any of it.
+//
+// The interesting part is the artifact wiring, which is implicit in the config --
+// a stage declares only what it PRODUCES, and its inputs are whatever placeholders
+// its prompt file uses. Resolving that here is the whole value of the view: it
+// makes the data flow visible instead of leaving it spread across N prompt files.
+export async function readDesign(root, file) {
+  if (!file || !existsSync(file)) return { file, exists: false };
+
+  const { loadChain, resolveStages } = await kernel(root);
+  let chain, promptRoot, errors;
+  try {
+    ({ chain, promptRoot, errors } = loadChain(file));
+  } catch (e) {
+    // A malformed file is the NORMAL state while someone is editing it. Show the
+    // parse error in place and keep the panel alive rather than blanking it.
+    return {
+      file,
+      exists: true,
+      parseError: String(e.message || e),
+      mtime: statSync(file).mtimeMs,
+    };
+  }
+
+  const stages = resolveStages(chain);
+  const seeds = Object.entries(chain.seeds || {}).map(([k, v]) => ({
+    name: k,
+    from: typeof v === "string" && v.startsWith("@") ? v.slice(1) : null,
+    missing:
+      typeof v === "string" && v.startsWith("@")
+        ? !existsSync(path.resolve(promptRoot, v.slice(1)))
+        : false,
+  }));
+
+  const produced = new Set(seeds.map((s) => s.name));
+  const loopIds = new Set(chain.loop?.stages || []);
+
+  const view = stages.map((s) => {
+    const promptFile = path.resolve(promptRoot, s.prompt);
+    let uses = [];
+    const promptMissing = !existsSync(promptFile);
+    let promptChars = 0;
+    if (!promptMissing) {
+      const text = readFileSync(promptFile, "utf8");
+      promptChars = text.length;
+      uses = [
+        ...new Set([...text.matchAll(/\{\{\s*([\w.]+)\s*\}\}/g)].map((m) => m[1].split(".")[0])),
+      ];
+    }
+    const row = {
+      ...s,
+      prompt: s.prompt,
+      promptFile,
+      promptMissing,
+      promptChars,
+      uses,
+      // Unresolved inputs are shown per stage rather than only in the error list,
+      // so the break is visible AT the stage that breaks.
+      unresolved: uses.filter((u) => !produced.has(u)),
+      inLoop: loopIds.has(s.id),
+    };
+    if (s.produces) produced.add(s.produces);
+    return row;
+  });
+
+  return {
+    file,
+    exists: true,
+    mtime: statSync(file).mtimeMs,
+    name: chain.name || path.basename(file),
+    // The file's own comments are the design rationale -- the reason chains are
+    // YAML at all -- so the header comment block is surfaced as the description.
+    intent: headComment(readFileSync(file, "utf8")),
+    seeds,
+    stages: view,
+    loop: chain.loop
+      ? { stages: chain.loop.stages || [], until: chain.loop.until, max: chain.loop.max }
+      : null,
+    gate: chain.gate || null,
+    defaults: chain.defaults || {},
+    errors,
+  };
+}
+
+export function headComment(text) {
+  const lines = [];
+  for (const raw of text.split("\n")) {
+    const l = raw.trim();
+    if (!l) {
+      if (lines.length) break;
+      continue;
+    }
+    if (!l.startsWith("#")) break;
+    lines.push(l.replace(/^#\s?/, ""));
+  }
+  return lines.join("\n").trim();
+}

@@ -1,0 +1,17 @@
+node_modules/
+
+# Generated run output -- the evidence a run happened, not source.
+results/
+
+# NO LOCKFILE IS COMMITTED, DELIBERATELY, AND THIS IS TEMPORARY.
+#
+# This repo is developed on a machine whose npm registry is a corporate mirror.
+# The mirror REWRITES every resolution line in pnpm-lock.yaml to internal,
+# authenticated hosts. Committing that here would publish internal infrastructure
+# details in a public repo and hand every outside contributor a lockfile pointing
+# at hosts they cannot reach.
+#
+# The fix is to generate the lockfile somewhere that reaches public npm -- this
+# repo's own CI runner does -- and commit that. Until then no lockfile is better
+# than a poisoned one. There are five dependencies; a fresh resolve is cheap.
+pnpm-lock.yaml

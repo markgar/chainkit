@@ -1,0 +1,47 @@
+# p2-code-review-fix — build it, have a second model look, repair once.
+#
+# One variable added to p1: a review by a DIFFERENT model family, and a single
+# repair pass. Same job, same spec, same builder, same grader, same gate — so any
+# difference in delivery rate is attributable to the review and fix.
+#
+# The reviewer is a separate model on purpose. A model reviewing its own output
+# shares its own blind spots, so it mostly confirms what it already did.
+
+name: p2-code-review-fix
+
+seeds:
+  spec: "@../fixtures/scaffold-duration/spec.md"
+
+defaults:
+  effort: high
+  timeoutMs: 1800000
+
+stages:
+  - id: code
+    prompt: ../prompts/sd-code.md
+    # No `produces`: the product is the tree. The reviewer reads the repo, not the
+    # builder's account of it -- deliberately, so a confident self-report cannot
+    # steer the review.
+    model: mai-code-1.1-flash
+    tools: true
+
+  - id: review
+    prompt: ../prompts/sd-review.md
+    produces: verdict
+    parse: json
+    # The key contract this stage must honour. Prompts are the part of a chain
+    # people edit, and a reworded reviewer that starts answering {"passed": true}
+    # would otherwise pass silently -- the fix stage would render a verdict of the
+    # wrong shape and carry on. Checked the moment the artifact is produced.
+    expects:
+      pass: boolean
+      findings: array
+    model: gpt-5.6-sol
+    tools: true # it runs the tests itself instead of taking the builder's word
+
+  - id: fix
+    prompt: ../prompts/sd-fix.md
+    model: mai-code-1.1-flash
+    tools: true
+
+gate: "git diff --quiet HEAD -- acceptance && node --test acceptance/*.test.js"

@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# chainkit's gate is `check.mjs`, which ships with the engine rather than living
+# here. That is deliberate: a repo that vendors chainkit runs the exact same gate,
+# so "it passes CI" and "it passes in the host" cannot drift apart.
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.4.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # No lockfile is committed yet -- see .gitignore for why (the corp mirror on
+      # the development machine rewrites every resolution line to internal URLs).
+      # This runner reaches public npm, so it is the right place to produce one.
+      # When you are ready to commit a clean lockfile, take it from this job.
+      - run: pnpm install --no-frozen-lockfile
+
+      - run: node check.mjs

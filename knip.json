@@ -1,0 +1,13 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "entry": [
+    "run.mjs",
+    "prep-workdir.mjs",
+    "extensions/*/extension.mjs",
+    "extensions/*/selftest.mjs"
+  ],
+  "project": ["**/*.mjs"],
+  "ignore": ["fixtures/**"],
+  "ignoreBinaries": ["copilot"],
+  "ignoreDependencies": ["prettier", "@github/copilot-sdk.*"]
+}

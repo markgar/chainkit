@@ -1,0 +1,31 @@
+# p1-code — build it. One stage. Nothing else.
+#
+# The simplest process that can produce a result, and the baseline every other
+# process has to beat. If adding stages does not raise the delivery rate above
+# this, the stages are ceremony.
+#
+# The job is scaffolded from an empty repo: the workdir contains only the
+# acceptance/ grader at its base commit. Prepare one with
+#   node prep-workdir.mjs --fixture scaffold-duration --workdir results/workdirs/<name>
+
+name: p1-code
+
+seeds:
+  spec: "@../fixtures/scaffold-duration/spec.md"
+
+defaults:
+  effort: high
+  timeoutMs: 1800000
+
+stages:
+  - id: code
+    prompt: ../prompts/sd-code.md
+    # No `produces`: this stage's product is the files it wrote, not a value any
+    # later stage reads. Naming an artifact here would be decoration.
+    model: mai-code-1.1-flash
+    tools: true
+
+# Two clauses, and the first one is not optional. `node --test` alone would be
+# graded by tests the run could have rewritten, so the grader is checked unchanged
+# before it is trusted. A gate that can be edited by the thing it grades is not a gate.
+gate: "git diff --quiet HEAD -- acceptance && node --test acceptance/*.test.js"

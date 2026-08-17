@@ -1,0 +1,15 @@
+node_modules/
+
+# Generated run output — the evidence a run happened, not source.
+results/
+
+# Prompts, governance docs and fixture specs are MODEL INPUTS, not prose. This
+# repo sets proseWrap:"never", which collapses every paragraph onto one line --
+# fine for documentation, ruinous here, because a prompt diff IS a process diff
+# and reviewing it line by line is the main way a change to the process gets
+# caught. A fixture's acceptance/ suite is the grader, copied verbatim into a
+# run, so it is held byte-stable for the same reason.
+prompts/
+chains/specs/
+fixtures/*/spec.md
+fixtures/*/acceptance/
