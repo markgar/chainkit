@@ -18,5 +18,11 @@ files above, and never anything under `acceptance/`.
 Do not argue with the review and do not fix anything it did not raise — a fix round
 that also refactors is a fix round nobody can grade.
 
+The conventions below still apply.
+
+## CONVENTIONS
+
+{{conventions}}
+
 Run the acceptance command when you are done. Reply with a short plain-text note
 saying what you changed and whether it passed.

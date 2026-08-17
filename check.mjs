@@ -130,10 +130,19 @@ function checkChainRoot(root) {
       problems.push(`${f}: ${w}`);
     for (const s of loaded.chain.stages || [])
       if (s.prompt) used.add(path.resolve(loaded.promptRoot, s.prompt));
+    // A seed of the form `@path` reads a file: a supporting doc -- a coding
+    // standard, a review rubric -- kept beside the chain instead of pasted into
+    // it. Those count as referenced for the same reason prompts do.
+    for (const v of Object.values(loaded.chain.seeds || {}))
+      if (typeof v === "string" && v.startsWith("@"))
+        used.add(path.resolve(loaded.promptRoot, v.slice(1)));
   }
+  // An unreferenced prompt or supporting doc is the quiet failure this catches: it
+  // still reads like part of the process, so a change made to it looks landed while
+  // no run has ever loaded it.
   for (const p of findFiles(
     root,
-    (f) => f.endsWith(".md") && path.basename(path.dirname(f)) === "prompts",
+    (f) => f.endsWith(".md") && ["prompts", "docs"].includes(path.basename(path.dirname(f))),
   ))
     if (!used.has(p)) problems.push(`${path.relative(root, p)}: no chain references it`);
   return problems.map((p) => `${path.relative(hostRoot, root) || "."}/${p}`);

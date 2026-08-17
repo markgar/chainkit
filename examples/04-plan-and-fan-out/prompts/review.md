@@ -32,6 +32,18 @@ Fail the chunk if any of these is true:
 - The blueprint pins a behaviour (an error type, an exact message, a boundary case)
   that the code does not implement, even if no test currently catches it.
 
+Judge by the rubric below, against the conventions below it — not by taste.
+
+## RUBRIC
+
+{{rubric}}
+
+## CONVENTIONS
+
+{{conventions}}
+
+---
+
 Return ONLY a JSON object, no prose around it:
 
 {

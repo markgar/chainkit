@@ -25,6 +25,10 @@ That is deliberate, not incidental: **there is nothing to fan out over in a one-
 | [`prompts/code.md`](prompts/code.md) | builds ONE chunk, reading `{{chunk.*}}` |
 | [`prompts/review.md`](prompts/review.md) | judges ONE chunk |
 | [`prompts/fix.md`](prompts/fix.md) | repairs ONE chunk |
+| [`docs/conventions.md`](docs/conventions.md) | the standard, seeded as `{{conventions}}` — same document rungs 02 and 03 use |
+| [`docs/review-rubric.md`](docs/review-rubric.md) | what counts as a finding, seeded as `{{rubric}}` |
+
+The two docs are copied in rather than linked out, so this rung is readable and runnable without leaving its directory. Copying is the deliberate choice for the whole ladder; see [`../README.md`](../README.md).
 
 ## Run it
 

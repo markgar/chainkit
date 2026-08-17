@@ -1,12 +1,21 @@
 # 02-review-and-fix — build it, have a DIFFERENT model look, repair once.
 #
 # Exactly one construct added to rung 01: a second and third stage, and the
-# artifact that carries a value between them. Same job, same spec, same builder,
-# same grader, same gate -- so any difference in delivery rate against 01 is
-# attributable to the review and the fix, and to nothing else.
+# artifact that carries a value between them. Same job, same spec, same builder
+# model, same grader, same gate.
 #
-# `prompts/code.md` is byte-identical to rung 01's on purpose. If you edit one,
-# edit both, or the ladder stops measuring what it claims to.
+# This rung also introduces SUPPORTING DOCS -- `docs/conventions.md`, the standard
+# the builder writes to, and `docs/review-rubric.md`, what counts as a finding.
+# They arrive here rather than at rung 01 because they only mean anything once
+# there is a second model judging the first: a reviewer with no stated standard
+# invents one, and the loop then spends its rounds negotiating taste. Both are
+# ordinary seeds -- there is no "docs" feature in the kernel, just files read from
+# disk and rendered into a prompt.
+#
+# SAY IT PLAINLY: that makes rung 02 differ from rung 01 by TWO things, the review
+# and the docs, so a delivery-rate difference between those two is not attributable
+# to either alone. 02 -> 03 and 03 -> 04 remain single-variable, and this rung's
+# three prompts are byte-identical to rung 03's.
 #
 # The reviewer is a DIFFERENT MODEL FAMILY on purpose. A model reviewing its own
 # output shares its own blind spots, so it mostly confirms what it already did.
@@ -17,6 +26,8 @@ name: 02-review-and-fix
 
 seeds:
   spec: "@../../fixtures/scaffold-duration/spec.md"
+  conventions: "@docs/conventions.md"
+  rubric: "@docs/review-rubric.md"
 
 defaults:
   effort: high

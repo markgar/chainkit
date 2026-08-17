@@ -21,6 +21,8 @@ It is also the **smallest complete exercise of the engine**: config load → pro
 | [`chain.yaml`](chain.yaml)           | seeds, one stage, one gate                       |
 | [`prompts/code.md`](prompts/code.md) | the builder's prompt; `{{spec}}` is interpolated |
 
+That is the whole rung: a spec, a chain, and one prompt. Nothing here is a convention doc or a rubric, because with a single stage there is nobody to agree with — [rung 02](../02-review-and-fix/) adds those at the moment they start to mean something.
+
 The job is [`../../fixtures/scaffold-duration`](../../fixtures/scaffold-duration/) — a zero-dependency duration parser/formatter, graded by `node --test`. Its spec is tight on purpose: exact error types per bad input, exact rounding, longest-first unit matching. A vague spec measures the spec, not the process.
 
 ## Run it

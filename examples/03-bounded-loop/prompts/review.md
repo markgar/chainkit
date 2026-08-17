@@ -6,6 +6,7 @@ Do this:
 2. Run `node --test acceptance/*.test.js` yourself. Do not take anyone's word for the result.
 3. Confirm nothing under `acceptance/` was modified: `git diff --stat HEAD -- acceptance` must be empty. If it is not, that is an automatic failure.
 4. Compare the code against the specification for behaviour the tests might not cover.
+5. Compare the code against the conventions below.
 
 Do not edit any file. You are reading and running only.
 
@@ -26,7 +27,15 @@ Reply with **JSON and nothing else**, in exactly this shape:
 
 `pass` is `true` only if the test suite is fully green AND `acceptance/` is unmodified. If `pass` is `true`, `findings` may be empty.
 
-Every finding must be something concrete and actionable — a place, an observed wrong behaviour, and what to do about it. Do not report style preferences.
+Judge findings by the rubric below, not by taste.
+
+## Rubric
+
+{{rubric}}
+
+## Conventions
+
+{{conventions}}
 
 ## Specification
 

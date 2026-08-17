@@ -14,12 +14,16 @@ The three prompts are byte-identical to rung 02's. Keep them that way.
 
 ## Files
 
-| file                                     | what it is                                 |
-| ---------------------------------------- | ------------------------------------------ |
-| [`chain.yaml`](chain.yaml)               | the same three stages, plus a `loop` block |
-| [`prompts/code.md`](prompts/code.md)     | identical to rungs 01 and 02               |
-| [`prompts/review.md`](prompts/review.md) | identical to rung 02                       |
-| [`prompts/fix.md`](prompts/fix.md)       | identical to rung 02                       |
+| file                                             | what it is                                 |
+| ------------------------------------------------ | ------------------------------------------ |
+| [`chain.yaml`](chain.yaml)                       | the same three stages, plus a `loop` block |
+| [`prompts/code.md`](prompts/code.md)             | identical to rungs 01 and 02               |
+| [`prompts/review.md`](prompts/review.md)         | identical to rung 02                       |
+| [`prompts/fix.md`](prompts/fix.md)               | identical to rung 02                       |
+| [`docs/conventions.md`](docs/conventions.md)     | identical to rung 02                       |
+| [`docs/review-rubric.md`](docs/review-rubric.md) | identical to rung 02                       |
+
+Every file except `chain.yaml` is byte-identical to rung 02's, docs included. That is what makes the comparison between the two rungs a measurement of the loop rather than of anything else.
 
 ## Run it
 

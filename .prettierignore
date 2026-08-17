@@ -10,5 +10,6 @@ results/
 # caught. A fixture's acceptance/ suite is the grader, copied verbatim into a
 # run, so it is held byte-stable for the same reason.
 **/prompts/
+**/docs/
 fixtures/*/spec.md
 fixtures/*/acceptance/

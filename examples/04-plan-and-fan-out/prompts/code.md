@@ -20,6 +20,12 @@ are theirs; touching one silently breaks work that was already graded green.
 
 ---
 
+## CONVENTIONS (they apply to your chunk like any other code)
+
+{{conventions}}
+
+---
+
 ## SPEC (for context — build only your chunk)
 
 {{spec}}

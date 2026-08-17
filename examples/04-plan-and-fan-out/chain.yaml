@@ -31,6 +31,11 @@ name: 04-plan-and-fan-out
 
 seeds:
   spec: "@../../fixtures/scaffold-calc/spec.md"
+  # The same two supporting docs rungs 02 and 03 use, carried here so this rung is
+  # readable on its own. They are ordinary seeds; every stage that wants one names
+  # it in its prompt.
+  conventions: "@docs/conventions.md"
+  rubric: "@docs/review-rubric.md"
   # SEEDED WITH A SENTINEL on purpose. A `{{placeholder}}` with no artifact
   # behind it is a hard error, so without this the planner's first render would
   # fail -- on round one there is no prior review to show it. On round two the

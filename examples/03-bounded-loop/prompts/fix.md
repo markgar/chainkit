@@ -13,6 +13,10 @@ Reply with a short summary of what you changed and the final test result.
 
 {{verdict}}
 
+## Conventions
+
+{{conventions}}
+
 ## Specification
 
 {{spec}}
