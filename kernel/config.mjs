@@ -49,6 +49,16 @@ const CHAIN_KEYS = new Set([
   "note",
 ]);
 const LOOP_KEYS = new Set(["stages", "until", "max", "note"]);
+// `onExhausted` exists ONLY on the chain-level loop, which is why this is a separate
+// set rather than a member of LOOP_KEYS. A foreach's inner loop is always followed by
+// that element's own gate -- the objective signal that overrides the reviewer's
+// opinion -- so stopping before the gate would discard the very check that decides
+// the element. The chain loop has no such guarantee: what follows it may be a fan-out
+// that spends many times the loop's own cost on the artifact the loop just failed to
+// ratify. So the question "is running on regardless acceptable?" is only meaningful
+// here, and only here is it answerable in config.
+const CHAIN_LOOP_KEYS = new Set([...LOOP_KEYS, "onExhausted"]);
+const ON_EXHAUSTED = new Set(["halt", "continue"]);
 // FOREACH is the second control-flow construct, and like `loop` the kernel knows
 // nothing about what it is iterating. `over` names an artifact that happens to be
 // an array; `as` binds each element under a name the prompts render. That the
@@ -166,7 +176,7 @@ function validateChain(chain, { promptRoot, readPrompt = defaultReadPrompt } = {
   }
 
   if (chain.loop) {
-    errors.push(...unknownKeys(chain.loop, LOOP_KEYS, "loop"));
+    errors.push(...unknownKeys(chain.loop, CHAIN_LOOP_KEYS, "loop"));
     for (const id of chain.loop.stages || [])
       if (!seen.has(id)) errors.push(`loop: names stage "${id}", which does not exist`);
     if (!chain.loop.stages?.length) errors.push("loop: no stages");
@@ -178,6 +188,11 @@ function validateChain(chain, { promptRoot, readPrompt = defaultReadPrompt } = {
       const art = rootOf(chain.loop.until);
       if (!available.has(art)) errors.push(`loop: until reads "${art}", which no stage produces`);
     }
+    if (chain.loop.onExhausted !== undefined && !ON_EXHAUSTED.has(chain.loop.onExhausted))
+      errors.push(
+        `loop: onExhausted must be one of ${[...ON_EXHAUSTED].join(", ")} ` +
+          `(got "${chain.loop.onExhausted}")`,
+      );
   }
 
   if (fe) {
@@ -546,6 +561,21 @@ export function selfTest() {
       e.includes('reads "ghost"'),
     ),
   ]);
+  CASES.push([
+    "onExhausted: continue is accepted on the chain loop",
+    V({ ...looped, loop: { ...looped.loop, onExhausted: "continue" } }).length === 0,
+  ]);
+  CASES.push([
+    "onExhausted: halt is accepted on the chain loop",
+    V({ ...looped, loop: { ...looped.loop, onExhausted: "halt" } }).length === 0,
+  ]);
+  CASES.push(["an omitted onExhausted is accepted (the default is halt)", V(looped).length === 0]);
+  CASES.push([
+    "a misspelled onExhausted VALUE is rejected, not silently treated as continue",
+    V({ ...looped, loop: { ...looped.loop, onExhausted: "proceed" } }).some((e) =>
+      e.includes("onExhausted must be one of"),
+    ),
+  ]);
 
   const r = resolveStages({
     defaults: { model: "m", effort: "high", tools: true },
@@ -858,6 +888,12 @@ export function selfTest() {
   CASES.push([
     "a foreach with no gate still validates (the kernel does not require one)",
     V({ ...feChain, foreach: { ...feChain.foreach, gate: undefined } }).length === 0,
+  ]);
+  CASES.push([
+    "onExhausted on a FOREACH loop is rejected — it means nothing where a gate follows",
+    FE({ loop: { ...feChain.foreach.loop, onExhausted: "halt" } }).some((e) =>
+      e.includes("foreach.loop: unknown key"),
+    ),
   ]);
 
   return CASES;

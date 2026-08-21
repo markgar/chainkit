@@ -128,6 +128,38 @@ export function foreachDelivered(iterations, expected) {
   return iterations.every((it) => (it.gate ? it.gate.ok === true : true));
 }
 
+// Did the CHAIN loop exhaust its budget without reaching its condition, and if so is
+// that a reason to stop? Returns a halt record or null.
+//
+// An exhausted loop is a FAILED PRECONDITION, not a lap counter running out. The chain
+// declared `until` as the condition under which the loop's output is fit to use, so a
+// loop that spends its whole budget without reaching it has said, in the only way it
+// can, that the artifact is not ready. Continuing spends the rest of the chain on an
+// input the chain's own reviewer rejected -- and a fan-out is what typically sits
+// downstream, so that is the expensive direction in which to be wrong.
+//
+// Observed: a plan loop exhausted 2/2 with its reviewer naming the exact defect (a
+// chunk whose declared file ownership omitted a file its own blueprint required), the
+// fan-out built on the rejected plan anyway, and the chunk died on precisely that
+// fault. The finding was free; rediscovering it cost a fan-out.
+//
+// `onExhausted: continue` is for the case where continuing is right: a loop whose
+// reviewer is ADVISORY because something objective follows it. Then the gate, not the
+// reviewer, decides, and stopping early would discard the deciding check.
+export function exhaustedHalt(loop, satisfied) {
+  if (!loop) return null;
+  if (satisfied === true) return null;
+  if (loop.onExhausted === "continue") return null;
+  return {
+    stage: "loop",
+    kind: "exhausted",
+    reason:
+      `loop ran its full budget of ${loop.max} round(s) without "${loop.until}" becoming ` +
+      `true — halting rather than spending the rest of the chain on an artifact the loop ` +
+      `itself did not ratify (set loop.onExhausted: continue to override)`,
+  };
+}
+
 export function selfTest() {
   const CASES = [];
   const ctxOf = (o) => ({ has: (n) => n in o, get: (n) => o[n] });
@@ -271,6 +303,35 @@ export function selfTest() {
   CASES.push([
     "elements with no gate deliver on having run",
     foreachDelivered([{ gate: null }, { gate: null }], 2) === true,
+  ]);
+
+  // THE EXHAUSTED-LOOP HALT. The regression these lock down is a run that spent a
+  // whole fan-out on a plan its own reviewer had already rejected in writing.
+  const L = { stages: ["plan", "plan-review"], until: "planVerdict.pass", max: 2 };
+  CASES.push(["a satisfied loop does not halt", exhaustedHalt(L, true) === null]);
+  CASES.push(["an exhausted loop halts by default", exhaustedHalt(L, false) !== null]);
+  CASES.push([
+    "the halt names the condition, so the record says WHAT was not ratified",
+    exhaustedHalt(L, false).reason.includes("planVerdict.pass"),
+  ]);
+  CASES.push([
+    "the halt is tagged kind=exhausted, distinguishable from a stage failure",
+    exhaustedHalt(L, false).kind === "exhausted",
+  ]);
+  CASES.push([
+    "onExhausted: continue keeps the advisory-reviewer case running",
+    exhaustedHalt({ ...L, onExhausted: "continue" }, false) === null,
+  ]);
+  CASES.push([
+    "onExhausted: halt is the default spelled out, and still halts",
+    exhaustedHalt({ ...L, onExhausted: "halt" }, false) !== null,
+  ]);
+  // `satisfied` is null when the chain HAS no loop, and undefined when the condition
+  // never materialized. Neither is `true`, and neither should be read as ratified.
+  CASES.push(["no loop is not a halt", exhaustedHalt(null, null) === null]);
+  CASES.push([
+    "an undefined condition counts as unsatisfied, not as passing",
+    exhaustedHalt(L, undefined) !== null,
   ]);
 
   return CASES;

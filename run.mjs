@@ -21,6 +21,7 @@ import {
   foreachDelivered,
   scopedNames,
   conditionMet,
+  exhaustedHalt,
 } from "./kernel/foreach.mjs";
 import { reduceCumulative } from "./kernel/cost.mjs";
 import { treeSnapshot, treeDelta } from "./kernel/tree.mjs";
@@ -413,6 +414,10 @@ if (chain.loop && !halted) {
 }
 
 const loopSatisfied = chain.loop ? readPath(ctx, chain.loop.until) === true : null;
+
+// An exhausted loop stops the run by default — see `exhaustedHalt`. This is the
+// guard that keeps a rejected plan from being fanned out at many times its cost.
+if (!halted) halted = exhaustedHalt(chain.loop, loopSatisfied) || halted;
 
 // THE FAN-OUT. The chain's second control-flow construct: run a stage list once per
 // element of an artifact array, with its own bounded inner loop and its own gate per

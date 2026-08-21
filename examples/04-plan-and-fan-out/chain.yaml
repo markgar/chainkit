@@ -97,6 +97,13 @@ loop:
   max:
     2 # one re-plan. A planner that cannot satisfy its reviewer twice is not
     # going to on the third try, and the chunks are what gets billed.
+  # No `onExhausted` here, so the default applies: if the loop spends both rounds
+  # without the reviewer passing the plan, the run HALTS instead of fanning out.
+  # This is the shape that makes that default matter -- everything below is billed
+  # per chunk, so continuing would multiply the cost of a plan already judged unfit.
+  # Rung 03 sets `onExhausted: continue` because there the reviewer is advisory and
+  # an objective gate follows; here nothing objective stands between a bad plan and
+  # the spend.
 
 foreach:
   over: plan.chunks # the array produced by `plan`
