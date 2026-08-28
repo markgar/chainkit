@@ -1,13 +1,28 @@
 // THE EXECUTOR: run one stage.
 //
-// Uniform by construction. A stage is prompt + model -> artifact, and this function
+// Uniform by construction. A stage turns input into an artifact, and this function
 // is the ONLY place a model gets called. It does not know or care whether the stage
 // is planning, coding or reviewing -- that distinction lives entirely in the prompt
 // file and the config. Keeping it that way is what makes "add a stage" a config
 // edit; the moment this function branches on a stage id, it stops being true.
+//
+// There are exactly TWO kinds of stage, and the difference is what decides the
+// output, not what the stage is "for":
+//
+//   prompt + model -> artifact   (runStage)        a judgement, priced in AiU
+//   run (a command) -> artifact  (runCommandStage) a fact, priced at nothing
+//
+// The second exists because a chain always contains steps with no judgement in
+// them -- format the tree, install after a dependency edit, run codegen, read the
+// diff. Expressing those as a model call is worse in every measurable way: it
+// costs a premium request, it can fail nondeterministically, and it can decline.
+// A run stage is deliberately NOT a lesser stage: it produces artifacts, declares
+// its shape, and can be a loop member like any other, so a chain can branch on a
+// measured fact and not only on an opinion.
 
 import path from "node:path";
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { complete } from "./providers.mjs";
 import { render, readPath } from "./context.mjs";
 
@@ -189,6 +204,113 @@ export async function runStage({
     sessionId: sessionId || null,
     wallMs: Date.now() - started,
   };
+}
+
+// THE COMMAND EXECUTOR: run one `run:` stage.
+//
+// Returns the SAME result contract as runStage, so run.mjs's execute() treats both
+// identically -- artifact store, tree-delta accounting, halting, `optional`. That
+// symmetry is the point: a run stage is a first-class stage, not a side channel.
+export async function runCommandStage({ stage, ctx, workDir, logRoot, round = 0, iter = 0 }) {
+  // The command is RENDERED, exactly like a prompt, so it can close over artifacts:
+  // `run: pnpm test {{chunk.id}}`. render() throws on a placeholder no stage
+  // produced -- the same hard failure a prompt gets, and for the same reason. A
+  // command that silently loses a path argument does not fail; it runs against the
+  // wrong target and exits 0.
+  const command = render(stage.run, ctx);
+
+  const label = `${stage.id}${iter ? `.i${iter}` : ""}${round ? `.r${round}` : ""}`;
+  const logDir = path.join(
+    logRoot,
+    `${String(stage.ord ?? 0).padStart(2, "0")}-${stage.id}${iter ? `__i${iter}` : ""}`,
+  );
+
+  const started = Date.now();
+  const r = spawnSync("bash", ["-o", "pipefail", "-c", command], {
+    cwd: workDir,
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+    timeout: stage.timeoutMs,
+  });
+  const wallMs = Date.now() - started;
+  const stdout = r.stdout || "";
+  const output = `${stdout}\n${r.stderr || ""}`.trim();
+
+  // The transcript is written on EVERY path, including failure, because the reason a
+  // command failed is in its output and nowhere else. A run stage that halts a chain
+  // while its stderr lives only in a dead child process is exactly the "the failure's
+  // reason was available but not captured" gap.
+  let rawPath = null;
+  try {
+    mkdirSync(logDir, { recursive: true });
+    rawPath = path.join(logDir, `${label}.run.txt`);
+    writeFileSync(rawPath, `$ ${command}\n\n${output}\n`);
+  } catch {
+    /* the transcript is an observability aid; never fail a run over it */
+  }
+
+  // A TIMEOUT IS NOT A FAILING COMMAND. spawnSync reports it as a killing signal
+  // with a null status, which would otherwise read as the generic non-zero path and
+  // send the reader to the command instead of the clock.
+  if (r.error?.code === "ETIMEDOUT" || (r.status === null && r.signal)) {
+    return {
+      ok: false,
+      error: `stage "${stage.id}" (run) timed out after ${stage.timeoutMs}ms: ${command}`,
+      kind: "timeout",
+      rawPath,
+      wallMs,
+    };
+  }
+  if (r.status !== 0) {
+    return {
+      ok: false,
+      // The exit code alone is not a diagnosis. The tail carries the actual reason,
+      // which is the whole point of capturing it.
+      error:
+        `stage "${stage.id}" (run) exited ${r.status}: ${command}` +
+        (output ? `\n${output.slice(-2000)}` : ""),
+      kind: "run",
+      raw: output.slice(-2000),
+      rawPath,
+      wallMs,
+    };
+  }
+
+  // STDOUT ONLY when producing an artifact. stderr is where well-behaved tools put
+  // progress and warnings, and folding it into a value a later stage reads would
+  // make a chain's data depend on a tool's chattiness.
+  let value = stdout.trim();
+  if (stage.parse === "json") {
+    const p = extractJson(stdout);
+    if (!p.ok) {
+      return {
+        ok: false,
+        error: `stage "${stage.id}" (run): ${p.error}`,
+        kind: "parse",
+        raw: stdout.slice(-2000),
+        rawPath,
+        wallMs,
+      };
+    }
+    value = p.value;
+  }
+
+  const shapeProblems = checkShape(value, stage.expects);
+  if (shapeProblems.length) {
+    return {
+      ok: false,
+      error: `stage "${stage.id}" (run) broke its declared shape: ${shapeProblems.join("; ")}`,
+      kind: "shape",
+      raw: JSON.stringify(value).slice(0, 2000),
+      rawPath,
+      wallMs,
+    };
+  }
+
+  // No `telemetry` row on purpose: there is no model call to price. A run stage is
+  // free, and inventing a zero-cost row would put it in the per-stage cost table as
+  // though it had been billed and merely come back cheap.
+  return { ok: true, value, rawPath, wallMs, promptChars: command.length, sessionId: null };
 }
 
 function randomId() {

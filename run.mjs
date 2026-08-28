@@ -12,7 +12,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { loadChain, resolveStages, warnChain } from "./kernel/config.mjs";
 import { makeContext, render, summarize } from "./kernel/context.mjs";
-import { runStage, readPath } from "./kernel/stage.mjs";
+import { runStage, runCommandStage, readPath } from "./kernel/stage.mjs";
 import {
   resolveItems,
   checkElement,
@@ -294,19 +294,21 @@ async function execute(stage, round = 0, iter = 0) {
   const treeBefore = snap();
   journalCall(stage, round, iter);
   process.stdout.write(
-    `→ ${stage.id}${iter ? ` [${iter}]` : ""}${round ? ` (round ${round})` : ""} … ${stage.model}${stage.tools ? " +tools" : ""}${stage.resume ? " +resume" : ""}\n`,
+    `→ ${stage.id}${iter ? ` [${iter}]` : ""}${round ? ` (round ${round})` : ""} … ${stage.run ? `$ ${stage.run}` : stage.model}${stage.tools ? " +tools" : ""}${stage.resume ? " +resume" : ""}\n`,
   );
-  const res = await runStage({
-    stage,
-    ctx,
-    promptRoot,
-    workDir,
-    logRoot,
-    round,
-    iter,
-    sessions,
-    maxCredits: arg("max-credits"),
-  });
+  const res = stage.run
+    ? await runCommandStage({ stage, ctx, workDir, logRoot, round, iter })
+    : await runStage({
+        stage,
+        ctx,
+        promptRoot,
+        workDir,
+        logRoot,
+        round,
+        iter,
+        sessions,
+        maxCredits: arg("max-credits"),
+      });
   if (res.telemetry) telemRows.push(res.telemetry);
   const filesChanged = treeDelta(treeBefore, snap());
   stageLog.push({
@@ -317,6 +319,7 @@ async function execute(stage, round = 0, iter = 0) {
     error: res.error || null,
     kind: res.kind || null,
     model: stage.model,
+    run: stage.run || null,
     effort: stage.effort,
     tools: stage.tools,
     resume: stage.resume,
@@ -328,10 +331,13 @@ async function execute(stage, round = 0, iter = 0) {
     rawPath: res.rawPath || null,
   });
 
-  // A stage configured WITHOUT tools cannot write, so the designer canvas labels it
-  // "reasons only". If the tree moved anyway, that label is a lie and every later
-  // conclusion rests on a run that did something other than what the config says.
-  if (!stage.tools && filesChanged.length) {
+  // A MODEL stage configured WITHOUT tools cannot write, so the designer canvas
+  // labels it "reasons only". If the tree moved anyway, that label is a lie and every
+  // later conclusion rests on a run that did something other than what the config
+  // says. A `run` stage is exempt: writing IS its job, it carries no `tools` key at
+  // all (validation rejects one), and its command is stated in the config in full --
+  // so "what may this stage change" is answered by reading it, not by a flag.
+  if (!stage.run && !stage.tools && filesChanged.length) {
     console.log(`   ✗ stage "${stage.id}" has tools: false but the tree changed`);
     halted = {
       stage: stage.id,

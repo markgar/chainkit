@@ -12,7 +12,32 @@ Weld the two together and the process becomes code, so every change to it is an 
 
 ## Design rule
 
-**There are no stage kinds.** A stage is uniform: prompt + model → artifact. The kernel does not know what a "review" is; a review is a stage whose prompt asks for a verdict and whose output parses as JSON. The moment the kernel branches on a stage id, "add a stage is just config" stops being true.
+**The kernel never branches on what a stage is _for_.** The kernel does not know what a "review" is; a review is a stage whose prompt asks for a verdict and whose output parses as JSON. The moment the kernel branches on a stage id, "add a stage is just config" stops being true.
+
+There are exactly **two stage kinds**, and the split is mechanical — what decides the output, not what the stage means:
+
+| kind      | shape                     | cost |
+| --------- | ------------------------- | ---- |
+| `prompt:` | prompt + model → artifact | AiU  |
+| `run:`    | shell command → artifact  | free |
+
+A `run` stage exists because every real chain contains steps with no judgement in them — format the tree, install after a dependency edit, run codegen, read the diff, commit. Expressing those as a model call is worse in every measurable way: it costs a premium request, it can fail nondeterministically, and it can decline. It is deliberately **not** a lesser stage: its command is rendered with `{{artifact}}` like a prompt, it can `produce` a parsed artifact and declare its `expects` shape, and it can be a loop member — so a chain can branch on a **measured fact** and not only on an opinion:
+
+```yaml
+- id: probe
+  run: 'printf ''{"clean": %s}'' "$(git diff --quiet && echo true || echo false)"'
+  parse: json
+  produces: probe
+  expects: { clean: boolean }
+loop:
+  stages: [fix, probe]
+  until: probe.clean
+  max: 3
+```
+
+A `run` stage takes no `model`, `effort`, `tools` or `resume`, and the config is **rejected** if it carries one rather than ignoring it: `run: pnpm format` alongside `model: claude-opus-5` is an author who believes a model is involved, and a run record showing a model that never ran is unreadable next to one that did. For the same reason chain `defaults.model` is not folded into it.
+
+It is also the honest way to declare a deterministic **write**. A model stage with `tools: false` halts the run if the tree moves, because the config claimed it only reasons; a `run` stage is exempt, since writing is its job and its command is stated in the config in full — "what may this change" is answered by reading it, not by trusting a flag.
 
 Control flow is exactly two things: stages run in order, and one bounded `loop` repeats a subset until a named artifact field is true.
 
@@ -27,7 +52,7 @@ Control flow is exactly two things: stages run in order, and one bounded `loop` 
     kernel/
       config.mjs         load + STATIC validation (fails free, before any spend)
       context.mjs        artifact store + {{placeholder}} rendering
-      stage.mjs          run one stage — the only place a model is called
+      stage.mjs          run one stage — the only place a model is called, and the shell
       providers.mjs      how a model is invoked, and what is kept out of its prompt
       telemetry.mjs      JSONL parse, raw persistence, live mirror
       cost.mjs           AiU accounting with the cumulative-snapshot rules

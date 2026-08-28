@@ -22,6 +22,7 @@ import { modelWarnings } from "./models.mjs";
 const STAGE_KEYS = new Set([
   "id",
   "prompt",
+  "run",
   "produces",
   "parse",
   "model",
@@ -33,6 +34,14 @@ const STAGE_KEYS = new Set([
   "expects",
   "note",
 ]);
+
+// The keys that only mean something for a MODEL stage. A `run` stage carrying one
+// is not a harmless extra: `run: pnpm format` with `model: claude-opus-5` is a
+// config whose author believes a model is involved. Ignoring it silently would let
+// that belief survive, and the run record would then show a stage with a model that
+// never ran -- unreadable next to a real one. Same reasoning as requiring every
+// model stage to name its model, inverted.
+const MODEL_ONLY_KEYS = ["model", "effort", "tools", "resume"];
 
 // The types an `expects` declaration may name. Deliberately tiny: this exists to
 // catch a broken key contract, not to be a schema language.
@@ -88,13 +97,25 @@ function validateChain(chain, { promptRoot, readPrompt = defaultReadPrompt } = {
     if (!s.id) errors.push("stage: missing id");
     else if (seen.has(s.id)) errors.push(`stage "${s.id}": duplicate id`);
     seen.add(s.id);
-    if (!s.prompt) errors.push(`stage "${s.id}": missing prompt`);
-    // EVERY STAGE NAMES ITS MODEL. Not defaulted by the kernel, on purpose: an
+    if (!s.prompt && !s.run) errors.push(`stage "${s.id}": missing prompt or run`);
+    // EXACTLY ONE KIND. Both keys present is not a stage that does two things, it is
+    // an author who does not know which one runs -- and whichever the engine picked
+    // would be a silent choice about what the run actually measured.
+    if (s.prompt && s.run) errors.push(`stage "${s.id}": has both prompt and run -- pick one`);
+    if (s.run !== undefined && typeof s.run !== "string")
+      errors.push(`stage "${s.id}": run must be a string (a shell command)`);
+    if (s.run) {
+      for (const k of MODEL_ONLY_KEYS)
+        if (s[k] !== undefined)
+          errors.push(`stage "${s.id}": run stages take no "${k}" -- no model is called`);
+    }
+    // EVERY MODEL STAGE NAMES ITS MODEL. Not defaulted by the kernel, on purpose: an
     // absent model is not "the sensible one", it is whatever the CLI happens to
     // pick that day, and a run whose record says `model: undefined` cannot be
     // compared to any other run. The chain may still say it once in `defaults`
-    // -- this only requires that the config, not the tool, decided.
-    if (!s.model && !(chain.defaults || {}).model)
+    // -- this only requires that the config, not the tool, decided. A `run` stage
+    // is exempt because it calls no model at all.
+    if (!s.run && !s.model && !(chain.defaults || {}).model)
       errors.push(`stage "${s.id}": no model (set stage.model, or chain defaults.model)`);
     // `produces` is OPTIONAL, deliberately. A builder's product is the tree it
     // wrote, not a citable value, and forcing it to name an artifact nothing reads
@@ -148,11 +169,22 @@ function validateChain(chain, { promptRoot, readPrompt = defaultReadPrompt } = {
   const feProduces = stages.filter((s) => feIds.has(s.id)).map((s) => s.produces);
 
   for (const s of stages) {
+    // A run stage's "body" is its command string: the same placeholder reachability
+    // check applies, because `run: pnpm test {{chunk.id}}` is exactly as capable of
+    // referencing an artifact nothing produces as a prompt is -- and it is knowable
+    // statically, so it must not cost a run to discover.
     let body = null;
-    try {
-      body = readPrompt(promptRoot, s.prompt);
-    } catch {
-      errors.push(`stage "${s.id}": prompt file not found: ${s.prompt}`);
+    if (s.run) {
+      // Only a STRING command is a renderable body. A malformed `run` is already an
+      // error above; letting it through here would throw out of the validator, which
+      // turns a clear config error into a stack trace.
+      body = typeof s.run === "string" ? s.run : null;
+    } else {
+      try {
+        body = readPrompt(promptRoot, s.prompt);
+      } catch {
+        errors.push(`stage "${s.id}": prompt file not found: ${s.prompt}`);
+      }
     }
     if (body != null) {
       const visible = new Set(available);
@@ -167,7 +199,7 @@ function validateChain(chain, { promptRoot, readPrompt = defaultReadPrompt } = {
         // look unreachable, which trains people to stop believing the checker.
         if (!visible.has(rootOf(ref)))
           errors.push(
-            `stage "${s.id}": prompt references {{${ref}}}, which no earlier stage produces ` +
+            `stage "${s.id}": ${s.run ? "run command" : "prompt"} references {{${ref}}}, which no earlier stage produces ` +
               `(available: ${[...visible].sort().join(", ") || "none"})`,
           );
       }
@@ -288,10 +320,18 @@ export function warnChain(chain, { promptRoot, readPrompt = defaultReadPrompt } 
   const referenced = new Set();
   for (const s of stages) {
     let body = null;
-    try {
-      body = readPrompt(promptRoot, s.prompt);
-    } catch {
-      /* absence is an ERROR, reported by validateChain; not a warning */
+    if (s.run) {
+      // A run stage consumes artifacts through its command, so it counts as a reader.
+      // Without this, `run: pnpm test {{chunk.id}}` would leave its producer looking
+      // dead and earn a permanent warning on a correct chain -- which is how people
+      // learn to ignore warnings.
+      body = typeof s.run === "string" ? s.run : null;
+    } else {
+      try {
+        body = readPrompt(promptRoot, s.prompt);
+      } catch {
+        /* absence is an ERROR, reported by validateChain; not a warning */
+      }
     }
     if (body != null)
       // A prompt that reads `{{verdict.findings}}` has read `verdict`. Root the
@@ -411,24 +451,34 @@ function defaultReadPrompt(root, rel) {
 // record ambiguous about which model actually ran.
 export function resolveStages(chain) {
   const d = chain.defaults || {};
-  return (chain.stages || []).map((s, i) => ({
-    id: s.id,
-    // Execution order, carried so the log dir can be named `<nn>-<id>`. The
-    // canvas lists a run's sub-dirs with a plain lexical sort, so without the
-    // ordinal a five-stage chain would render alphabetically -- reading as a
-    // sequence that never happened.
-    ord: i + 1,
-    prompt: s.prompt,
-    produces: s.produces,
-    parse: s.parse || "text",
-    model: s.model || d.model,
-    effort: s.effort || d.effort || "high",
-    tools: s.tools ?? d.tools ?? false,
-    resume: s.resume ?? d.resume ?? false,
-    timeoutMs: s.timeoutMs ?? d.timeoutMs ?? 900000,
-    optional: !!s.optional,
-    expects: s.expects || null,
-  }));
+  return (chain.stages || []).map((s, i) => {
+    const common = {
+      id: s.id,
+      // Execution order, carried so the log dir can be named `<nn>-<id>`. The
+      // canvas lists a run's sub-dirs with a plain lexical sort, so without the
+      // ordinal a five-stage chain would render alphabetically -- reading as a
+      // sequence that never happened.
+      ord: i + 1,
+      produces: s.produces,
+      parse: s.parse || "text",
+      timeoutMs: s.timeoutMs ?? d.timeoutMs ?? 900000,
+      optional: !!s.optional,
+      expects: s.expects || null,
+    };
+    // A RUN STAGE TAKES NO MODEL DEFAULTS. Folding in `defaults.model` here would
+    // put a model on a stage that never calls one, and the run record is the thing
+    // people compare across runs -- a stage listing `claude-opus-5` beside a shell
+    // command is a record that lies about what was spent and what decided.
+    if (s.run) return { ...common, run: s.run };
+    return {
+      ...common,
+      prompt: s.prompt,
+      model: s.model || d.model,
+      effort: s.effort || d.effort || "high",
+      tools: s.tools ?? d.tools ?? false,
+      resume: s.resume ?? d.resume ?? false,
+    };
+  });
 }
 
 // CHAIN FILES ARE YAML, for one reason above the others: YAML takes COMMENTS.
@@ -531,6 +581,59 @@ export function selfTest() {
     V({ ...base, stages: [base.stages[0], base.stages[0]] }).some((e) =>
       e.includes("duplicate id"),
     ),
+  ]);
+
+  // ---- `run` stages: a stage whose output is a fact, not a judgement -----------
+  CASES.push([
+    "a run stage validates with no model anywhere",
+    V({ ...base, defaults: {}, stages: [{ id: "fmt", run: "pnpm format" }] }).length === 0,
+  ]);
+  CASES.push([
+    "a stage with neither prompt nor run is an error",
+    V({ ...base, stages: [{ id: "z", produces: "q" }] }).some((e) =>
+      e.includes("missing prompt or run"),
+    ),
+  ]);
+  CASES.push([
+    "a stage with BOTH prompt and run is an error",
+    V({ ...base, stages: [{ id: "z", prompt: "a.md", run: "ls" }] }).some((e) =>
+      e.includes("pick one"),
+    ),
+  ]);
+  // The rule that keeps a run stage honest: a model key on it means the author
+  // believes a model runs. Ignoring it would let that belief survive.
+  for (const k of MODEL_ONLY_KEYS) {
+    CASES.push([
+      `a run stage carrying "${k}" is an error`,
+      V({ ...base, stages: [{ id: "fmt", run: "pnpm format", [k]: "x" }] }).some((e) =>
+        e.includes(`run stages take no "${k}"`),
+      ),
+    ]);
+  }
+  CASES.push([
+    "a non-string run is an error",
+    V({ ...base, stages: [{ id: "fmt", run: ["pnpm", "format"] }] }).some((e) =>
+      e.includes("run must be a string"),
+    ),
+  ]);
+  // A command is rendered like a prompt, so it gets the same static reachability
+  // check -- knowable before the run, so it must not cost one to discover.
+  CASES.push([
+    "a run command referencing an unproduced artifact is an error",
+    V({ ...base, stages: [...base.stages, { id: "t", run: "pnpm test {{nothing}}" }] }).some(
+      (e) => e.includes("{{nothing}}") && e.includes("run command"),
+    ),
+  ]);
+  CASES.push([
+    "a run command may reference an artifact an earlier stage produced",
+    V({ ...base, stages: [...base.stages, { id: "t", run: "echo {{plan}}" }] }).length === 0,
+  ]);
+  CASES.push([
+    "a run stage may produce a parsed artifact",
+    V({
+      ...base,
+      stages: [...base.stages, { id: "m", run: "cat metrics.json", parse: "json", produces: "m" }],
+    }).length === 0,
   ]);
 
   const looped = {
