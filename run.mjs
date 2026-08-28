@@ -22,6 +22,7 @@ import {
   scopedNames,
   conditionMet,
   exhaustedHalt,
+  linearSlots,
 } from "./kernel/foreach.mjs";
 import { reduceCumulative } from "./kernel/cost.mjs";
 import { treeSnapshot, treeDelta } from "./kernel/tree.mjs";
@@ -377,11 +378,21 @@ async function execute(stage, round = 0, iter = 0) {
 const loopIds = new Set(chain.loop?.stages || []);
 const fe = chain.foreach || null;
 const feIds = new Set(fe?.stages || []);
-// The linear part of the chain is everything that is neither a loop member nor a
-// fan-out member. Fan-out stages are driven by the iteration below, not here.
-const preLoop = stages.filter((s) => !loopIds.has(s.id) && !feIds.has(s.id));
+// THE LINEAR PART, SPLIT BY DECLARED POSITION. A stage that is neither a loop nor a
+// fan-out member runs in the slot its position in `stages` puts it: before the loop,
+// between the loop and the fan-out, or after the fan-out.
+//
+// It used to be one list, filtered by MEMBERSHIP alone, so every linear stage ran
+// before the loop no matter where it was written. A stage declared last ran second,
+// silently -- and "run something after the fan-out" (normalise the tree, collect a
+// report, commit the result) was not expressible at all, which is what pushed that
+// work into the gate, where a judge quietly becomes a mutator of what it judges.
+//
+// Existing chains are unaffected: they declare their linear stages first, which is
+// still `pre`.
+const slots = linearSlots(stages, loopIds, feIds);
 
-for (const stage of preLoop) {
+for (const stage of slots.pre) {
   if (halted) break;
   await execute(stage);
 }
@@ -436,6 +447,11 @@ if (!halted) halted = exhaustedHalt(chain.loop, loopSatisfied) || halted;
 // element gets an objective pass/fail, and a failing element stops the run.
 const iterations = [];
 let feExpected = null;
+// Linear stages declared BETWEEN the loop and the fan-out.
+for (const stage of slots.mid) {
+  if (halted) break;
+  await execute(stage);
+}
 if (fe && !halted) {
   const resolved = resolveItems(ctx, fe);
   feExpected = resolved.ok ? resolved.items.length : null;
@@ -544,6 +560,14 @@ if (fe && !halted) {
 // THE DECLARED GATE. The chain's own definition of done, run once at the end over
 // the assembled result. Blame is diff-scoped: a whole-repo gate also catches drift
 // this run never touched, and charging that to the run makes every number wrong.
+//
+// Linear stages declared AFTER the fan-out run first -- they are the last chance to
+// put the tree in the state the gate will judge, which is why they exist: so the
+// gate never has to mutate anything itself.
+for (const stage of slots.post) {
+  if (halted) break;
+  await execute(stage);
+}
 let gate = null;
 if (chain.gate && !halted) {
   console.log(`\n=== GATE (${chain.gate}) ===`);

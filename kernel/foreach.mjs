@@ -67,6 +67,38 @@ export function checkElement(item, fe, iter) {
   };
 }
 
+// WHICH SLOT EACH LINEAR STAGE RUNS IN.
+//
+// A stage that is neither a loop member nor a fan-out member runs in the slot its
+// DECLARED POSITION puts it: before the loop, between the loop and the fan-out, or
+// after the fan-out.
+//
+// This used to be a single membership filter, so every linear stage ran before the
+// loop regardless of where it was written -- a stage declared last ran second, and
+// nothing said so. Worse, "run something after the fan-out" was not expressible at
+// all, so that work got folded into the gate, which turns the impartial judge of a
+// run into a mutator of the thing it is judging.
+export function linearSlots(stages, loopIds, feIds) {
+  const idxOf = (ids) => {
+    const i = stages.findIndex((s) => ids.has(s.id));
+    return i === -1 ? null : i;
+  };
+  // Only blocks that EXIST bound the slots. Defining `post` as "after the fan-out"
+  // would put a stage declared after the loop of a fan-out-less chain into `mid`,
+  // which runs it in the right place but names it wrongly -- and a record whose slot
+  // names do not match the chain's shape is the kind of small lie that costs an hour
+  // the first time someone debugs execution order with it.
+  const present = [idxOf(loopIds), idxOf(feIds)].filter((i) => i !== null);
+  const firstAt = present.length ? Math.min(...present) : Infinity;
+  const lastAt = present.length ? Math.max(...present) : -Infinity;
+  const slots = { pre: [], mid: [], post: [] };
+  stages.forEach((s, i) => {
+    if (loopIds.has(s.id) || feIds.has(s.id)) return;
+    slots[i < firstAt ? "pre" : i > lastAt ? "post" : "mid"].push(s);
+  });
+  return slots;
+}
+
 // Which stages run once at the top of an element, and which are the inner loop's.
 // A stage in `stages` but not in `loop.stages` runs exactly once per element.
 export function passOrder(fe) {
@@ -332,6 +364,53 @@ export function selfTest() {
   CASES.push([
     "an undefined condition counts as unsatisfied, not as passing",
     exhaustedHalt(L, undefined) !== null,
+  ]);
+
+  // ---- linear slots: declared position decides when a linear stage runs --------
+  const S = (...ids) => ids.map((id) => ({ id }));
+  const ids = (arr) => arr.map((s) => s.id).join(",");
+  {
+    // The shape that was silently wrong: a stage declared AFTER the loop.
+    const sl = linearSlots(S("before", "a", "b", "after"), new Set(["a", "b"]), new Set());
+    CASES.push(["a stage declared before the loop runs pre", ids(sl.pre) === "before"]);
+    CASES.push(["a stage declared after the loop runs post, not pre", ids(sl.post) === "after"]);
+  }
+  {
+    // The slot that did not exist at all, and the reason gates were doing tree work.
+    const sl = linearSlots(S("plan", "code", "normalize"), new Set(), new Set(["code"]));
+    CASES.push(["a stage after the fan-out runs post", ids(sl.post) === "normalize"]);
+    CASES.push(["a stage before the fan-out still runs pre", ids(sl.pre) === "plan"]);
+  }
+  {
+    // Between the two blocks: after the loop, before the fan-out.
+    const sl = linearSlots(
+      S("p", "pr", "mid", "code", "tail"),
+      new Set(["p", "pr"]),
+      new Set(["code"]),
+    );
+    CASES.push(["a stage between loop and fan-out runs mid", ids(sl.mid) === "mid"]);
+    CASES.push(["and the one after the fan-out still runs post", ids(sl.post) === "tail"]);
+    CASES.push(["nothing lands in pre when nothing precedes the loop", sl.pre.length === 0]);
+  }
+  {
+    // REGRESSION GUARD: every existing chain declares its linear stages first, and
+    // must keep running exactly as before.
+    const sl = linearSlots(
+      S("seedcheck", "p", "pr", "code"),
+      new Set(["p", "pr"]),
+      new Set(["code"]),
+    );
+    CASES.push([
+      "the pre-existing shape (linear stages first) is unchanged",
+      ids(sl.pre) === "seedcheck" && sl.mid.length === 0 && sl.post.length === 0,
+    ]);
+  }
+  CASES.push([
+    "members are never scheduled as linear stages",
+    (() => {
+      const sl = linearSlots(S("a", "b"), new Set(["a"]), new Set(["b"]));
+      return sl.pre.length === 0 && sl.mid.length === 0 && sl.post.length === 0;
+    })(),
   ]);
 
   return CASES;

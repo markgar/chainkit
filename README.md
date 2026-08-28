@@ -41,6 +41,8 @@ It is also the honest way to declare a deterministic **write**. A model stage wi
 
 Control flow is exactly two things: stages run in order, and one bounded `loop` repeats a subset until a named artifact field is true.
 
+**Declared position decides when a linear stage runs.** A stage that is neither a loop nor a fan-out member runs in the slot its position in `stages` puts it — before the blocks, between them, or after. This is what makes a post-fan-out step (normalise the tree, collect a report, commit the result) expressible, and it is why the gate never has to mutate anything itself.
+
 **A loop that never reaches its condition halts the run.** `until` is the chain's own statement of when the loop's output is fit to use, so exhausting `max` without reaching it is a failed precondition, not a lap counter running out — and continuing spends everything downstream (typically a fan-out, at many times the loop's cost) on an artifact the chain's own reviewer rejected. Set `onExhausted: continue` for the case where continuing is right: a loop whose reviewer is **advisory** because something objective follows it, as in [03-bounded-loop](examples/03-bounded-loop/), where the gate rather than the reviewer decides. An unsatisfied loop is recorded as unsatisfied either way, and blocks `delivered` either way. The key is rejected on a `foreach`'s inner loop, where that element's gate already runs next and stopping early would discard it.
 
 ## Layout
