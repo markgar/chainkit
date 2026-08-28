@@ -225,12 +225,44 @@ export async function runCommandStage({ stage, ctx, workDir, logRoot, round = 0,
     `${String(stage.ord ?? 0).padStart(2, "0")}-${stage.id}${iter ? `__i${iter}` : ""}`,
   );
 
+  // ARTIFACTS REACH A COMMAND AS A FILE, NEVER AS INTERPOLATED TEXT.
+  //
+  // `{{...}}` is the right channel for a scalar -- `pnpm test {{chunk.id}}`. It is
+  // the WRONG one for a structured artifact: render() serialises an object as
+  // pretty-printed multi-line JSON, which is perfect inside a prompt and unsafe
+  // inside `bash -c`. A plan whose blueprint contains an apostrophe, a backtick or
+  // a `$` does not fail loudly when spliced into a command -- it is silently
+  // mangled, or it executes. So a stage that needs to READ an artifact gets a path
+  // to the whole store and parses it itself, with no shell in the middle.
+  //
+  // It is written even when the command ignores it, because it costs nothing and it
+  // makes the log dir answer "what could this command actually see?" -- which is not
+  // reconstructable afterwards once the store has moved on.
+  let artifactsPath;
+  try {
+    mkdirSync(logDir, { recursive: true });
+    artifactsPath = path.join(logDir, `${label}.artifacts.json`);
+    const snap = typeof ctx?.snapshot === "function" ? ctx.snapshot() : {};
+    writeFileSync(artifactsPath, JSON.stringify(snap, null, 2));
+  } catch {
+    artifactsPath = null; // never fail a run over an observability aid
+  }
+
   const started = Date.now();
   const r = spawnSync("bash", ["-o", "pipefail", "-c", command], {
     cwd: workDir,
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,
     timeout: stage.timeoutMs,
+    // The stage's own identity travels with it, so a script shared by several
+    // stages can tell which one invoked it without being told twice in config.
+    env: {
+      ...process.env,
+      ...(artifactsPath ? { CHAINKIT_ARTIFACTS: artifactsPath } : {}),
+      CHAINKIT_STAGE: String(stage.id),
+      CHAINKIT_ROUND: String(round),
+      CHAINKIT_ITER: String(iter),
+    },
   });
   const wallMs = Date.now() - started;
   const stdout = r.stdout || "";
@@ -244,7 +276,12 @@ export async function runCommandStage({ stage, ctx, workDir, logRoot, round = 0,
   try {
     mkdirSync(logDir, { recursive: true });
     rawPath = path.join(logDir, `${label}.run.txt`);
-    writeFileSync(rawPath, `$ ${command}\n\n${output}\n`);
+    writeFileSync(
+      rawPath,
+      `$ ${command}\n` +
+        (artifactsPath ? `# CHAINKIT_ARTIFACTS=${path.basename(artifactsPath)}\n` : "") +
+        `\n${output}\n`,
+    );
   } catch {
     /* the transcript is an observability aid; never fail a run over it */
   }

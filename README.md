@@ -37,6 +37,23 @@ loop:
 
 A `run` stage takes no `model`, `effort`, `tools` or `resume`, and the config is **rejected** if it carries one rather than ignoring it: `run: pnpm format` alongside `model: claude-opus-5` is an author who believes a model is involved, and a run record showing a model that never ran is unreadable next to one that did. For the same reason chain `defaults.model` is not folded into it.
 
+**A command READS artifacts from a file, not from `{{...}}`.** Interpolation is right for a scalar (`pnpm test {{chunk.id}}`) and wrong for a structured artifact: `render` serialises an object as pretty-printed multi-line JSON, which is exactly what a prompt wants and is unsafe inside `bash -c` — a value containing an apostrophe, a backtick or a `$` is not rejected, it is silently mangled or executed. So every run stage is handed the whole store as a file instead:
+
+| env var              | is                                                            |
+| -------------------- | ------------------------------------------------------------- |
+| `CHAINKIT_ARTIFACTS` | path to a JSON object of every artifact visible to this stage |
+| `CHAINKIT_STAGE`     | the stage's `id`                                              |
+| `CHAINKIT_ROUND`     | loop round, `0` outside a loop                                |
+| `CHAINKIT_ITER`      | fan-out element index, `0` outside a fan-out                  |
+
+```js
+const all = JSON.parse(readFileSync(process.env.CHAINKIT_ARTIFACTS, "utf8"));
+```
+
+The file is written into the stage's own log directory on every path, including failure, so the run's record answers "what could this command actually see?" — which cannot be reconstructed afterwards, once the store has moved on.
+
+**A stage that MEASURES should exit 0 when the answer is bad.** A non-zero exit means _the measurement itself failed_; encoding "the thing I measured is failing" the same way conflates "I could not look" with "I looked, and it is red" — and the second is a finding a later stage should read, not a reason to halt. Have the command emit its verdict as an artifact (`{"pass": false, ...}`) and let a reviewer or a `loop` condition act on it.
+
 It is also the honest way to declare a deterministic **write**. A model stage with `tools: false` halts the run if the tree moves, because the config claimed it only reasons; a `run` stage is exempt, since writing is its job and its command is stated in the config in full — "what may this change" is answered by reading it, not by trusting a flag.
 
 Control flow is exactly two things: stages run in order, and one bounded `loop` repeats a subset until a named artifact field is true.

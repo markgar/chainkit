@@ -168,6 +168,33 @@ function validateChain(chain, { promptRoot, readPrompt = defaultReadPrompt } = {
   const loopProduces = stages.filter((s) => loopIds.has(s.id)).map((s) => s.produces);
   const feProduces = stages.filter((s) => feIds.has(s.id)).map((s) => s.produces);
 
+  // WHICH REFERENCES ARE NON-SCALAR, and therefore must never be interpolated into a
+  // shell command.
+  //
+  // `render` serialises an object as pretty-printed multi-line JSON. Inside a prompt
+  // that is exactly right. Inside `bash -c` it is a defect with three outcomes, and
+  // only the first is survivable: the command dies on a quote (loud), the value is
+  // silently mangled (a command that runs against the wrong thing and exits 0), or
+  // the content is EXECUTED. A run stage reads structured artifacts from
+  // CHAINKIT_ARTIFACTS instead, so there is no remaining reason to splice one -- and
+  // this is knowable from the config alone, so it is refused before anything is spent
+  // rather than discovered by a corrupted command mid-run.
+  const nonScalar = new Set();
+  for (const s of stages) {
+    if (s.produces && s.parse === "json") nonScalar.add(s.produces);
+    if (s.produces && s.expects && typeof s.expects === "object")
+      for (const [k, t] of Object.entries(s.expects))
+        if (t === "array" || t === "object") nonScalar.add(`${s.produces}.${k}`);
+  }
+  if (fe?.as) {
+    // The bound element is whatever the plan's array holds -- an object in every
+    // fan-out that declares `expects`, which is the only shape the engine can check.
+    nonScalar.add(fe.as);
+    if (fe.expects && typeof fe.expects === "object")
+      for (const [k, t] of Object.entries(fe.expects))
+        if (t === "array" || t === "object") nonScalar.add(`${fe.as}.${k}`);
+  }
+
   for (const s of stages) {
     // A run stage's "body" is its command string: the same placeholder reachability
     // check applies, because `run: pnpm test {{chunk.id}}` is exactly as capable of
@@ -201,6 +228,12 @@ function validateChain(chain, { promptRoot, readPrompt = defaultReadPrompt } = {
           errors.push(
             `stage "${s.id}": ${s.run ? "run command" : "prompt"} references {{${ref}}}, which no earlier stage produces ` +
               `(available: ${[...visible].sort().join(", ") || "none"})`,
+          );
+        else if (s.run && nonScalar.has(ref))
+          errors.push(
+            `stage "${s.id}": run command interpolates {{${ref}}}, which is structured (not a scalar). ` +
+              `render() emits it as multi-line JSON, which a shell will mangle or execute -- ` +
+              `read it from the file at $CHAINKIT_ARTIFACTS instead, or interpolate a scalar field of it`,
           );
       }
     }
@@ -997,6 +1030,49 @@ export function selfTest() {
     FE({ loop: { ...feChain.foreach.loop, onExhausted: "halt" } }).some((e) =>
       e.includes("foreach.loop: unknown key"),
     ),
+  ]);
+
+  // A run command may interpolate a SCALAR and must not interpolate a structure.
+  // render() emits an object as multi-line JSON, which a shell mangles or executes;
+  // the file at $CHAINKIT_ARTIFACTS is the channel for those.
+  const RUNREF = (cmd) =>
+    V({
+      ...feChain,
+      stages: [...feChain.stages, { id: "probe", run: cmd }],
+    });
+  CASES.push([
+    "a run command interpolating a json artifact is an error",
+    RUNREF("echo '{{plan}}'").some((e) => e.includes("which is structured")),
+  ]);
+  CASES.push([
+    "a run command interpolating an array FIELD is an error",
+    RUNREF("echo {{plan.chunks}}").some((e) => e.includes("which is structured")),
+  ]);
+  CASES.push([
+    "a run command interpolating the bound element is an error",
+    V({
+      ...feChain,
+      stages: [...feChain.stages, { id: "probe", run: "echo {{chunk}}" }],
+      foreach: { ...feChain.foreach, stages: ["code", "review", "fix", "probe"] },
+    }).some((e) => e.includes("which is structured")),
+  ]);
+  CASES.push([
+    "a run command interpolating a SCALAR field is fine",
+    V({
+      ...feChain,
+      stages: [...feChain.stages, { id: "probe", run: "run {{chunk.acceptance}}" }],
+      foreach: { ...feChain.foreach, stages: ["code", "review", "fix", "probe"] },
+    }).length === 0,
+  ]);
+  CASES.push([
+    "a PROMPT interpolating a structure is fine — that is what prompts are for",
+    // fe-code.md is "build {{chunk}} per {{plan}}": two structures, both legitimate,
+    // because a prompt is the one place multi-line JSON is the desired rendering.
+    V(feChain).length === 0,
+  ]);
+  CASES.push([
+    "the error names the file channel, so the fix is in the message",
+    RUNREF("echo '{{plan}}'").some((e) => e.includes("CHAINKIT_ARTIFACTS")),
   ]);
 
   return CASES;
