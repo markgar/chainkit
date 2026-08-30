@@ -14,7 +14,7 @@
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { readRun, listRuns } from "./telemetry.mjs";
+import { readRun, listRuns, describeTool } from "./telemetry.mjs";
 import { page } from "./render.mjs";
 import vm from "node:vm";
 
@@ -499,6 +499,51 @@ rmSync(root, { recursive: true, force: true });
   }
   eq("the page's inline script parses", syntaxError, null);
   eq("the page renders the non-model channels", html.includes("chans"), true);
+}
+
+// A tool call with no label is the same row repeated N times. The property that
+// matters is not "repo_read is handled" -- it is that a tool this reader has never
+// been taught still gets SOMETHING, because new extensions are added all the time
+// and the failure is silent: the panel renders, it just says nothing.
+{
+  eq(
+    "a batch reader names its targets and its size",
+    describeTool("repo_read", {
+      targets: [
+        { path: ".chainkit/governance/planning.md" },
+        { path: "CONSTITUTION.md" },
+        { path: "docs/architecture.md" },
+        { path: "packages/domain/src/attendee.ts" },
+      ],
+    }),
+    "governance/planning.md, CONSTITUTION.md, docs/architecture.md +1 · 4 targets",
+  );
+  eq(
+    "a small batch is named without a count",
+    describeTool("repo_read", { targets: [{ path: "a/b.ts" }, "c/d.ts"] }),
+    "a/b.ts, c/d.ts",
+  );
+  eq(
+    "a symbol lookup shows the symbol",
+    describeTool("ts_symbol", { symbol: "EventsStore" }),
+    "EventsStore",
+  );
+  eq(
+    "an UNKNOWN tool falls back to a scalar arg rather than nothing",
+    describeTool("some_future_tool", { query: "who calls this" }),
+    "who calls this",
+  );
+  eq(
+    "an unknown tool with only an array of paths still names them",
+    describeTool("some_future_tool", { files: ["src/a.ts", "src/b.ts"] }),
+    "src/a.ts, src/b.ts",
+  );
+  eq(
+    "an unknown tool with no usable value names its keys, not nothing",
+    describeTool("some_future_tool", { opts: { deep: true } }),
+    "opts",
+  );
+  eq("genuinely empty args stay empty", describeTool("some_future_tool", {}), "");
 }
 
 if (fails.length) {

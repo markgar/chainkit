@@ -48,10 +48,58 @@ import { readdirSync, readFileSync, statSync, existsSync } from "node:fs";
 import path from "node:path";
 
 // Tools whose arguments carry the interesting bit in different fields.
-function describeTool(name, args) {
+//
+// The `default` branch matters more than the named cases. A tool this function
+// has never heard of is the normal state of affairs — extensions get added — and
+// the old default returned "" for anything without a top-level path/command/
+// pattern. The visible result was a run's most informative calls rendered as the
+// least: twenty consecutive unlabelled `repo_read` rows, each of which had in
+// fact named eight files. An unknown tool must degrade to a worse label, never to
+// no label.
+function shortPath(p) {
+  return String(p).split("/").slice(-2).join("/");
+}
+
+// "a.ts, b.ts +3" — enough to tell two batches apart without wrapping the row.
+function summarizeList(items, render, max = 3) {
+  const shown = items.slice(0, max).map(render).filter(Boolean);
+  if (!shown.length) return "";
+  const rest = items.length - shown.length;
+  return shown.join(", ") + (rest > 0 ? ` +${rest}` : "");
+}
+
+// Last resort: say something true about args we have no rule for, rather than
+// nothing. Prefers a short scalar; falls back to naming the keys, which at least
+// distinguishes two calls to the same unknown tool.
+function describeUnknown(args) {
+  const entries = Object.entries(args).filter(([, v]) => v != null && v !== "");
+  if (!entries.length) return "";
+  const scalar = entries.find(
+    ([, v]) => (typeof v === "string" && v.length <= 120) || typeof v === "number",
+  );
+  if (scalar) return String(scalar[1]);
+  const arr = entries.find(([, v]) => Array.isArray(v) && v.length);
+  if (arr) {
+    const summary = summarizeList(arr[1], (el) =>
+      typeof el === "string"
+        ? shortPath(el)
+        : el && typeof el === "object" && el.path
+          ? shortPath(el.path)
+          : "",
+    );
+    if (summary) return summary;
+    return `${arr[0]}[${arr[1].length}]`;
+  }
+  return entries
+    .map(([k]) => k)
+    .join(", ")
+    .slice(0, 120);
+}
+
+export function describeTool(name, args) {
   if (!args || typeof args !== "object") return "";
   const p = args.path || args.file || args.filePath;
-  const rel = p ? String(p).split("/").slice(-2).join("/") : "";
+  const rel = p ? shortPath(p) : "";
   switch (name) {
     case "view":
       return rel + (Array.isArray(args.view_range) ? `:${args.view_range.join("-")}` : "");
@@ -64,8 +112,21 @@ function describeTool(name, args) {
       return `/${args.pattern || ""}/ ${args.glob || args.type || ""}`.trim();
     case "glob":
       return String(args.pattern || "");
+    // A batch reader: one call is many files, so the count is as interesting as
+    // the names. Without it every call to it looks identical.
+    case "repo_read": {
+      const targets = Array.isArray(args.targets) ? args.targets : [];
+      const names = summarizeList(targets, (t) =>
+        typeof t === "string" ? shortPath(t) : t && t.path ? shortPath(t.path) : "",
+      );
+      return targets.length > 3 ? `${names} · ${targets.length} targets` : names;
+    }
+    case "ts_symbol":
+      return String(args.symbol || "");
     default:
-      return rel || String(args.command || args.pattern || "").slice(0, 120);
+      return (
+        rel || String(args.command || args.pattern || "").slice(0, 120) || describeUnknown(args)
+      );
   }
 }
 
