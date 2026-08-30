@@ -87,7 +87,11 @@ export function page() {
      longer than that (repo_read, ts_outline, ts_symbol) overflowed its box and
      collided with the detail -- "repo_readgovernance/planning.md". It was
      invisible for as long as those tools rendered no detail at all. */
-  .tool { font-weight: 600; min-width: 58px; flex: none; white-space: nowrap; }
+  /* One shared column per round, sized to the widest tool name in that round, so
+     details line up instead of stepping in and out as names change length.
+     Monospace makes the ch unit exact; --toolw is set per .steps from the data. */
+  .tool { font-weight: 600; font-family: var(--font-mono, "SFMono-Regular", Consolas, monospace); white-space: nowrap;
+          flex: none; width: calc(var(--toolw, 10) * 1ch); }
   .detail { color: var(--muted); overflow-wrap: anywhere; }
   .chans { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 6px 26px; }
   .chan { font-size: 11px; padding: 1px 7px; border-radius: 999px; cursor: help;
@@ -297,6 +301,7 @@ function render(s) {
         const isOpen = key === activeKey;
         const flight = p.inFlight ? '<span class="dot live" title="call in flight"></span>' : "";
         const out = outputHtml(p.output);
+        const toolw = Math.max(10, ...p.steps.filter(x => x.kind !== "say").map(x => (x.name || "").length + 1));
         const steps = p.steps.map(x => x.kind === "say"
           ? \`<div class="say">\${esc(x.text)}</div>\`
           : \`<div class="step"><span class="st \${x.status}">\${x.status === "ok" ? "✓" : x.status === "failed" ? "✗" : x.status === "running" ? "◐" : "·"}</span><span class="tool">\${esc(x.name)}</span><span class="detail mono">\${esc(x.detail)}</span></div>\`
@@ -314,7 +319,7 @@ function render(s) {
               ? \`<span class="detail">\${p.toolCount} tools · \${p.aiu == null ? "AiU not reported yet" : p.aiu.toFixed(2) + " AiU"}</span>\`
               : \`<span class="detail">\${p.aiu == null ? "AiU not reported yet" : ""}</span>\`}
           </div>
-          <div class="steps">\${out}\${steps}</div>
+          <div class="steps" style="--toolw:\${toolw}">\${out}\${steps}</div>
         </div>\`;
       }).join("")}
     </div>\`).join("");
