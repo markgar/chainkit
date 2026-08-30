@@ -524,6 +524,26 @@ rmSync(root, { recursive: true, force: true });
     "a/b.ts, c/d.ts",
   );
   eq(
+    "a batch that names one file repeatedly says it once",
+    describeTool("repo_read", {
+      targets: [
+        { path: "docs/architecture.md", find: ["a"] },
+        { path: "docs/architecture.md", find: ["b"] },
+        { path: "docs/architecture.md", find: ["c"] },
+        { path: "src/config.ts" },
+      ],
+    }),
+    "docs/architecture.md, src/config.ts · 4 targets",
+  );
+  eq(
+    "re-reading a spilled tool result is not shown as a file path",
+    describeTool("view", {
+      path: "/var/folders/T/1788118695902-copilot-tool-output-e6b6.txt",
+      view_range: [1, 500],
+    }),
+    "(its own tool output):1-500",
+  );
+  eq(
     "a symbol lookup shows the symbol",
     describeTool("ts_symbol", { symbol: "EventsStore" }),
     "EventsStore",

@@ -83,7 +83,11 @@ export function page() {
   .step:hover { background: var(--background-color-muted, #f6f8fa); }
   .st { width: 12px; flex: none; text-align: center; }
   .st.ok { color: var(--ok); } .st.failed { color: var(--bad); } .st.running { color: var(--warn); }
-  .tool { font-weight: 600; width: 58px; flex: none; }
+  /* min-width, NOT width: this was a fixed 58px column, and every tool name
+     longer than that (repo_read, ts_outline, ts_symbol) overflowed its box and
+     collided with the detail -- "repo_readgovernance/planning.md". It was
+     invisible for as long as those tools rendered no detail at all. */
+  .tool { font-weight: 600; min-width: 58px; flex: none; white-space: nowrap; }
   .detail { color: var(--muted); overflow-wrap: anywhere; }
   .chans { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 6px 26px; }
   .chan { font-size: 11px; padding: 1px 7px; border-radius: 999px; cursor: help;

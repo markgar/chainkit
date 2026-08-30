@@ -57,7 +57,12 @@ import path from "node:path";
 // fact named eight files. An unknown tool must degrade to a worse label, never to
 // no label.
 function shortPath(p) {
-  return String(p).split("/").slice(-2).join("/");
+  const s = String(p);
+  // The CLI spills a large tool result to a temp file and the model then `view`s
+  // it back. Rendered as a path this is actively misleading -- it reads as the
+  // model opening a repo file, when it is re-reading something it already had.
+  if (/copilot-tool-output/.test(s)) return "(its own tool output)";
+  return s.split("/").slice(-2).join("/");
 }
 
 // "a.ts, b.ts +3" — enough to tell two batches apart without wrapping the row.
@@ -113,12 +118,19 @@ export function describeTool(name, args) {
     case "glob":
       return String(args.pattern || "");
     // A batch reader: one call is many files, so the count is as interesting as
-    // the names. Without it every call to it looks identical.
+    // the names. Without it every call to it looks identical. Names are deduped
+    // because a batch legitimately lists one file several times (same path,
+    // different `find` terms), and "architecture.md, architecture.md,
+    // architecture.md" spends the whole row saying one thing. The count is left
+    // as the true target count, so the two disagreeing is meaningful.
     case "repo_read": {
       const targets = Array.isArray(args.targets) ? args.targets : [];
-      const names = summarizeList(targets, (t) =>
-        typeof t === "string" ? shortPath(t) : t && t.path ? shortPath(t.path) : "",
-      );
+      const seen = [];
+      for (const t of targets) {
+        const n = typeof t === "string" ? shortPath(t) : t && t.path ? shortPath(t.path) : "";
+        if (n && !seen.includes(n)) seen.push(n);
+      }
+      const names = summarizeList(seen, (n) => n);
       return targets.length > 3 ? `${names} · ${targets.length} targets` : names;
     }
     case "ts_symbol":
