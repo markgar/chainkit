@@ -747,6 +747,30 @@ export function readRun(runDir, root) {
         st.status = summary.halted ? "unreached" : "skipped";
       }
     }
+  } else if (order) {
+    // WHILE THE RUN IS STILL GOING there is no record to consult, and the fix above
+    // does nothing -- which left a live run showing "not started" beside stages the
+    // journal proves had already run and returned a verdict the chain branched on.
+    //
+    // The journal is the right source and it is written at the instant of the call,
+    // before the stage does anything, so it is available exactly when the record is
+    // not. A stage in it has started; a stage with a LATER call after it has
+    // finished, because the driver is sequential and only starts the next stage once
+    // the previous one returns. The newest entry with no model calls is the one
+    // running right now.
+    //
+    // Stages absent from the journal are genuinely not started, and saying so is the
+    // point of drawing them: the panel shows the declared pipeline so the shape of
+    // the run is visible before it happens, not a list that grows from nothing.
+    let maxSeq = 0;
+    for (const seq of order.values()) if (seq > maxSeq) maxSeq = seq;
+    for (const st of stages) {
+      if (st.status !== "pending") continue;
+      const seq = order.get(`${st.id}/${st.iter || 0}/${st.round || 0}`);
+      if (!seq) continue;
+      st.noModelCalls = true;
+      st.status = seq < maxSeq ? "ran" : "running";
+    }
   }
 
   // The log directory only ever knew about MODEL CALLS. The two other handoffs

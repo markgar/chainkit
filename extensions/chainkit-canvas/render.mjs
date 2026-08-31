@@ -472,6 +472,7 @@ function render(s) {
           st.status === "pending" ? "not started"
           : st.status === "skipped" ? "skipped \u2014 never needed"
           : st.status === "unreached" ? "never reached \u2014 the run halted first"
+          : st.status === "running" && st.noModelCalls ? "running now"
           : st.noModelCalls ? "ran \u2014 no model call" + (st.wallMs ? " \u00b7 " + (st.wallMs >= 1000 ? (st.wallMs / 1000).toFixed(1) + "s" : st.wallMs + "ms") : "")
           : \`\${st.rounds.length > 1 ? st.rounds.length + " calls · " : ""}\${st.tools} tools · \${st.aiu.toFixed(2)} AiU\${st.unmetered ? " +?" : ""}\`}</span>
       </div>

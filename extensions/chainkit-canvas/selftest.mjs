@@ -477,6 +477,47 @@ rmSync(root, { recursive: true, force: true });
     false,
   );
 
+  // MID-RUN there is no record at all, so the block above does nothing and a live
+  // run showed "not started" beside command stages the journal proves had run.
+  {
+    const live = path.join(r, "results", "chain-runs", "logs", "c__live__2026-01-01T00-00-00");
+    mkdirSync(path.join(live, "01-cmd"), { recursive: true });
+    mkdirSync(path.join(live, "02-think"), { recursive: true });
+    writeFileSync(
+      path.join(live, "02-think", "think.jsonl"),
+      JSON.stringify({
+        type: "assistant.message",
+        timestamp: "2026-01-01T00:00:01.000Z",
+        data: { content: "done", model: "m" },
+      }) + "\n",
+    );
+    writeFileSync(
+      path.join(live, "_chain.json"),
+      JSON.stringify({ stages: [{ id: "cmd" }, { id: "think" }, { id: "gate" }, { id: "later" }] }),
+    );
+    // cmd ran, think ran, gate is the newest call and has no model log yet.
+    writeFileSync(
+      path.join(live, "_calls.jsonl"),
+      [
+        { seq: 1, id: "cmd", iter: 0, round: 0 },
+        { seq: 2, id: "think", iter: 0, round: 0 },
+        { seq: 3, id: "gate", iter: 0, round: 0 },
+      ]
+        .map((e) => JSON.stringify(e))
+        .join("\n") + "\n",
+    );
+    const l = readRun(live, r);
+    const S = (id) => l.stages.find((s) => s.id === id);
+    eq(
+      "mid-run, a command stage the journal recorded is not 'not started'",
+      S("cmd").status,
+      "ran",
+    );
+    eq("the newest journal entry is the stage running now", S("gate").status, "running");
+    eq("a stage the journal has never seen really has not started", S("later").status, "pending");
+    rmSync(live, { recursive: true, force: true });
+  }
+
   rmSync(r, { recursive: true, force: true });
 }
 
