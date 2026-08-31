@@ -229,7 +229,11 @@ writeFileSync(
         ord: s.ord,
         model: s.model,
         effort: s.effort ?? null,
-        tools: !!s.tools,
+        // The LIST survives here, not a boolean. `tools` is a per-stage independent
+        // variable in every experiment this record exists to support, and collapsing
+        // an allowlist to `true` makes a restricted run indistinguishable from an
+        // unrestricted one in the only artifact anybody compares afterwards.
+        tools: Array.isArray(s.tools) ? [...s.tools] : !!s.tools,
         resume: s.resume ?? null,
         produces: s.produces ?? null,
         parse: s.parse ?? "text",

@@ -128,6 +128,26 @@ function validateChain(chain, { promptRoot, readPrompt = defaultReadPrompt } = {
     if (s.parse === "json" && !s.produces)
       errors.push(`stage "${s.id}": parse: json without produces -- the parsed value goes nowhere`);
 
+    // `tools` is a boolean OR an allowlist of tool names. The allowlist exists
+    // because "prefer the repo tools" as PROSE does not work: a planner handed a
+    // governance doc saying so still made 80 shell calls, and every one of them
+    // was a read the repo tools already answered -- identical counts before and
+    // after the missing capability was shipped. Tool choice is a reflex, and the
+    // only thing that reliably changes a reflex is removing the alternative.
+    //
+    // An EMPTY list is refused. It means "no tools", which is `false`, and a list
+    // that silently equals a different setting is how a chain ends up measuring
+    // something nobody configured.
+    if (s.tools !== undefined && typeof s.tools !== "boolean") {
+      if (!Array.isArray(s.tools)) {
+        errors.push(`stage "${s.id}": tools must be true, false, or a list of tool names`);
+      } else if (s.tools.length === 0) {
+        errors.push(`stage "${s.id}": tools is an empty list -- write tools: false`);
+      } else if (!s.tools.every((t) => typeof t === "string" && t.trim())) {
+        errors.push(`stage "${s.id}": tools list must hold non-empty tool names`);
+      }
+    }
+
     // `expects` declares the KEY CONTRACT of a structured artifact. Prompts are the
     // part of a chain people edit most, and a reworded reviewer prompt that starts
     // answering {"passed": true} instead of {"pass": true} is invisible today: a
@@ -765,6 +785,33 @@ export function selfTest() {
   CASES.push(["defaults fold into stages", r[0].model === "m" && r[0].tools === true]);
   CASES.push(["a stage overrides the default", r[1].model === "other" && r[1].tools === false]);
   CASES.push(["parse defaults to text", r[0].parse === "text"]);
+
+  // `tools` as an ALLOWLIST. The list has to survive resolution intact -- it is a
+  // per-stage independent variable, and a run record that collapsed it to `true`
+  // would make a shell-free arm indistinguishable from an unrestricted one.
+  const withTools = (tools) => V({ ...base, stages: [{ id: "plan", prompt: "a.md", tools }] });
+  CASES.push(["a tools allowlist validates clean", withTools(["repo_read", "glob"]).length === 0]);
+  CASES.push(["tools: true still validates", withTools(true).length === 0]);
+  CASES.push([
+    "an empty tools list is refused, not read as false",
+    withTools([]).some((e) => e.includes("empty list")),
+  ]);
+  CASES.push([
+    "a non-string in the tools list is rejected",
+    withTools(["repo_read", 7]).some((e) => e.includes("non-empty tool names")),
+  ]);
+  CASES.push([
+    "a non-list, non-boolean tools is rejected",
+    withTools("repo_read").some((e) => e.includes("true, false, or a list")),
+  ]);
+  const rt = resolveStages({
+    defaults: {},
+    stages: [{ id: "a", prompt: "p", tools: ["repo_read", "glob"] }],
+  });
+  CASES.push([
+    "an allowlist survives resolution as a list",
+    Array.isArray(rt[0].tools) && rt[0].tools.join() === "repo_read,glob",
+  ]);
 
   // `expects` -- the declared key contract for a structured artifact.
   const withExpects = (expects, parse = "json") =>

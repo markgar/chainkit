@@ -142,6 +142,19 @@ async function azureComplete({ prompt, model, effort, json, timeoutMs }) {
 // this is measured, never assumed -- judge-bench.mjs runs warm and cold over
 // diffs with known answers precisely so a cost win that quietly costs accuracy
 // cannot be mistaken for a free one.
+// Pull the reason a failed CLI run gave, out of its combined output. The CLI
+// prints its own fatal errors as a plain `Error: ...` line rather than as
+// stream JSON, so this looks for the LAST such line -- earlier ones can be
+// recoverable noise from a subsystem that carried on.
+export function lastErrorLine(out) {
+  if (!out) return null;
+  const lines = String(out)
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => /^(Error|error):/i.test(l) && !l.startsWith("{"));
+  return lines.length ? lines[lines.length - 1] : null;
+}
+
 function cliComplete({
   prompt,
   model,
@@ -214,7 +227,20 @@ function cliComplete({
     // previously asked to promise its command fails on the current tree while
     // blindfolded, which is not a hard task, it is an unobservable one. It named
     // an existing passing test file and killed the run.
-    if (!tools) args.push("--available-tools", "");
+    //
+    // A LIST narrows which tools exist. Note the two flags are orthogonal:
+    // --allow-all-tools is auto-approval (required non-interactively), while
+    // --available-tools is the allowlist, so a restricted stage needs BOTH.
+    //
+    // Scope worth knowing before trusting a list: --available-tools filters the
+    // CLI's BUILT-IN tools only. Extension-provided tools stay available whatever
+    // the list says -- verified by probe, where naming two tools still left the
+    // repo's own extensions callable and removed bash, view and grep. So a list is
+    // a way to take the shell away, not a way to enumerate everything a stage has.
+    if (Array.isArray(tools)) {
+      args.push("--allow-all-tools");
+      for (const t of tools) args.push(`--available-tools=${t}`);
+    } else if (!tools) args.push("--available-tools", "");
     else args.push("--allow-all-tools");
     if (model) args.push("--model", model);
     if (effort) args.push("--reasoning-effort", effort);
@@ -235,7 +261,7 @@ function cliComplete({
           model,
           effort,
           sessionId: sessionId || null,
-          tools: !!tools,
+          tools: Array.isArray(tools) ? [...tools] : !!tools,
           cwd: cwd || null,
           promptChars: prompt ? prompt.length : 0,
           argv: args.map((a) => (a === prompt ? `<prompt:${prompt.length}chars>` : a)),
@@ -263,7 +289,7 @@ function cliComplete({
       appendLive(logDir, label, d);
     });
     child.stderr.on("data", (d) => (out += d));
-    child.on("close", () => {
+    child.on("close", (exitCode) => {
       clearTimeout(timer);
       const telemetry = parseCopilotJsonl(out);
       const rawPath = persistRaw(logDir, label, out);
@@ -276,7 +302,25 @@ function cliComplete({
             apiMs: telemetry.usage.totalApiDurationMs,
           }
         : null;
-      resolve({ text: telemetry.finalText || out, usage, telemetry, rawPath, timedOut, timeoutMs });
+      // THE EXIT CODE IS AN ANSWER, and it used to be thrown away here. A stage
+      // whose model call never happened -- the CLI rejected the flags and exited
+      // non-zero, printing the reason to stderr -- resolved with that error text
+      // as its "output" and was recorded ok:true, no error, no halt. Observed: a
+      // model that does not accept --reasoning-effort produced a run whose record
+      // said the stage succeeded and the chain simply delivered nothing.
+      //
+      // The reason is on stderr and already in `out`, so keep it: an exit code
+      // alone sends the reader to the logs for something the process said aloud.
+      resolve({
+        text: telemetry.finalText || out,
+        usage,
+        telemetry,
+        rawPath,
+        timedOut,
+        timeoutMs,
+        exitCode: exitCode ?? null,
+        exitReason: exitCode ? lastErrorLine(out) : null,
+      });
     });
   });
 }
@@ -336,6 +380,8 @@ function replayFromDisk({ replayDir, label, logDir, timeoutMs }) {
     rawPath,
     timedOut: false,
     timeoutMs,
+    exitCode: 0,
+    exitReason: null,
     replayed: true,
   });
 }

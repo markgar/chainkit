@@ -127,7 +127,14 @@ let picked = null;
 function stageHtml(s, n) {
   const pills = [
     \`<span class="pill model">\${esc(s.model || "(no model)")}</span>\`,
-    s.tools ? '<span class="pill tools">✎ writes repo</span>' : '<span class="pill think">reasons only</span>',
+    // An allowlist is named, not collapsed to "writes repo". Which tools a stage
+    // may reach is a design decision the reader is here to see, and it is the one
+    // thing that distinguishes a shell-free stage from an unrestricted one.
+    Array.isArray(s.tools)
+      ? \`<span class="pill tools">✎ only \${esc(s.tools.join(", "))}</span>\`
+      : s.tools
+        ? '<span class="pill tools">✎ writes repo</span>'
+        : '<span class="pill think">reasons only</span>',
     s.parse === "json" ? '<span class="pill">json</span>' : "",
     s.resume ? '<span class="pill resume">↻ same session</span>' : "",
     s.optional ? '<span class="pill opt">optional</span>' : "",

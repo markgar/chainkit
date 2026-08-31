@@ -23,7 +23,7 @@
 import path from "node:path";
 import { readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { complete } from "./providers.mjs";
+import { complete, lastErrorLine } from "./providers.mjs";
 import { render, readPath } from "./context.mjs";
 
 // Pull a JSON object out of a model's prose. Models reliably wrap JSON in fences or
@@ -197,6 +197,25 @@ export async function runStage({
       ok: false,
       error: `stage "${stage.id}" timed out after ${stage.timeoutMs}ms`,
       kind: "timeout",
+      telemetry: r.telemetry,
+      rawPath: r.rawPath,
+      wallMs: Date.now() - started,
+    };
+  }
+
+  // A NON-ZERO EXIT IS NOT AN ANSWER EITHER. Same family as the timeout above: the
+  // child resolves through the normal close path, so its stderr becomes the stage's
+  // "text" and everything downstream diagnoses the wrong thing -- or, for a stage
+  // with no `produces` to parse, nothing checks it at all and the run records ok.
+  // A probe stage whose model rejected a flag was recorded ok:true, error:null,
+  // halted:null, having made no model call whatsoever.
+  if (r.exitCode) {
+    return {
+      ok: false,
+      error:
+        `stage "${stage.id}" failed: the CLI exited ${r.exitCode}` +
+        (r.exitReason ? ` -- ${r.exitReason}` : ""),
+      kind: "exit",
       telemetry: r.telemetry,
       rawPath: r.rawPath,
       wallMs: Date.now() - started,
@@ -487,6 +506,20 @@ export function selfTest() {
   CASES.push(["no calls at all is not an error", stitchJson(undefined).ok === false]);
   // Malformed JSON must FAIL, not half-parse into something plausible.
   CASES.push(["malformed JSON fails", extractJson('{"a": }').ok === false]);
+
+  // The reason a failed CLI run gave. Discarding it leaves an exit code, which
+  // sends the reader to the logs for something the process already said aloud.
+  CASES.push([
+    "a fatal CLI error line is recovered",
+    lastErrorLine('{"type":"x"}\nError: Model "m" does not support reasoning effort.') ===
+      'Error: Model "m" does not support reasoning effort.',
+  ]);
+  CASES.push([
+    "the LAST error line wins over earlier recoverable noise",
+    lastErrorLine("Error: first\nsome output\nError: second") === "Error: second",
+  ]);
+  CASES.push(["clean output yields no error line", lastErrorLine('{"type":"x"}\nok') === null]);
+  CASES.push(["empty output yields no error line", lastErrorLine("") === null]);
 
   const ctx = {
     _m: new Map([["v", { pass: true, score: 0.9 }]]),
