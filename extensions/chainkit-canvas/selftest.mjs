@@ -687,6 +687,12 @@ rmSync(root, { recursive: true, force: true });
   }
   eq("the page's inline script parses", syntaxError, null);
   eq("the page renders the non-model channels", html.includes("chans"), true);
+  // A stage's status must reach the STYLESHEET, not just its right-hand label:
+  // a stage's calls run tall, so which stage you are inside has to be legible
+  // from the card, and "running now" has to look different from "finished an
+  // hour ago" without reading the text.
+  eq("each stage card carries its status as a class", html.includes('class="stage s-'), true);
+  eq("the stylesheet distinguishes the running stage", html.includes(".stage.s-running"), true);
 
   // A CUT-OFF stage must show the WHOLE answer, not its tail. The motivating
   // panel opened mid-word at "undred ms" because only the last assistant

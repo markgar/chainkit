@@ -53,8 +53,16 @@ export function page() {
   .legend span b { font-weight: 600; color: var(--text-color-default, #1f2328); }
   .swatch { width: 8px; height: 8px; border-radius: 2px; display: inline-block; margin-right: 4px; }
 
-  /* A stage: its header, then one row per round. */
-  .stage { margin-bottom: 14px; }
+  /* A stage: its header, then one row per round. Drawn as a filled card because a
+     stage's calls run tall -- 50 steps is normal -- so by the time you are reading
+     the middle of one, its header is far off screen and nothing on the row says
+     which stage you are in. The fill is a neutral grey at low alpha rather than a
+     theme colour, so it lifts a dark background and recesses a light one. */
+  .stage { margin-bottom: 12px; padding: 9px 11px 5px; border-radius: 10px;
+           background: rgba(127,127,127,.07); border: 1px solid transparent; }
+  /* The stage running RIGHT NOW is the only one that should be loud. */
+  .stage.s-running { background: rgba(127,127,127,.13);
+                     border-color: var(--accent, #0969da); }
   /* Element boundary in a fan-out. The rows are element-major, so this is where
      one chunk's work ends and the next begins. */
   .ghead { display: flex; align-items: center; gap: 8px; margin: 18px 0 10px; }
@@ -67,7 +75,6 @@ export function page() {
            border: 1px solid var(--border-color-default, #d0d7de); }
   .shead { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 5px; }
   .sord { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 11px; }
-  .sid { font-weight: 600; }
   .call { border: 1px solid var(--border-color-default, #d0d7de); border-radius: 8px;
           margin-bottom: 6px; overflow: hidden; }
   .chead { display: flex; align-items: center; gap: 8px; padding: 7px 10px; cursor: pointer;
@@ -114,8 +121,15 @@ export function page() {
           border: 1px solid var(--line); color: var(--muted); }
   .chan.warn { border-color: #b58900; color: #b58900; }
   .chan.dim { opacity: 0.5; }
-  .stage.pending { opacity: 0.45; }
+  .stage.pending { opacity: 0.45; background: none; }
   .stage.pending .sid { font-weight: 500; }
+  /* Weight and colour mean STATUS, not "this stage exists". Every non-pending
+     stage used to render its name bold at full contrast, so a stage that finished
+     ten minutes ago looked exactly as urgent as the one working now -- read, quite
+     reasonably, as "why is that one highlighted?". Finished is plain; running is
+     the accent. */
+  .sid { font-weight: 700; color: var(--accent, #0969da); }
+  .stage.s-ran .sid { font-weight: 500; color: var(--text-color-default, #1f2328); }
   .say { margin: 6px 10px 8px 14px; padding: 7px 9px; border-radius: 6px; white-space: pre-wrap;
          background: var(--background-color-muted, #f6f8fa);
          border-left: 3px solid var(--true-color-blue-muted, #54aeff); overflow-wrap: anywhere; }
@@ -457,7 +471,7 @@ function render(s) {
     : \`<div class="warnbox"><b>\${W.length} warning\${W.length === 1 ? "" : "s"}</b>\${W.map((w) => \`<div>\${esc(w)}</div>\`).join("")}</div>\`;
 
   el.body = banner + warnBox + run.stages.map((st) => groupHead(st) + \`
-    <div class="stage \${st.status === "pending" || st.status === "skipped" || st.status === "unreached" ? "pending" : ""}">
+    <div class="stage s-\${esc(st.status)} \${st.status === "pending" || st.status === "skipped" || st.status === "unreached" ? "pending" : ""}">
       <div class="shead">
         <span class="sord">\${String(st.seq ?? st.ord).padStart(2, "0")}</span>
         <span class="swatch" style="background:\${idHue(st.id)}"></span>
