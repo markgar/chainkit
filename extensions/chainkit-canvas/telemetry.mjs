@@ -133,6 +133,18 @@ export function describeTool(name, args) {
       const names = summarizeList(seen, (n) => n);
       return targets.length > 3 ? `${names} · ${targets.length} targets` : names;
     }
+    case "repo_changes": {
+      const paths = Array.isArray(args.paths) ? args.paths.map(shortPath) : [];
+      const scope = paths.length ? summarizeList(paths, (n) => n) : "whole worktree";
+      return `${args.base || "HEAD"} → ${scope}`;
+    }
+    case "repo_read_ref": {
+      const targets = Array.isArray(args.targets) ? args.targets : [];
+      const names = summarizeList(targets, (t) =>
+        shortPath(typeof t === "string" ? t : t?.path || ""),
+      );
+      return `${args.ref || "HEAD"} · ${names}`;
+    }
     case "ts_symbol":
       return String(args.symbol || "");
     default:
@@ -140,6 +152,16 @@ export function describeTool(name, args) {
         rel || String(args.command || args.pattern || "").slice(0, 120) || describeUnknown(args)
       );
   }
+}
+
+// A finished process and a successful delivery are different facts. Keep the
+// classification in the reader so every renderer gets the same answer.
+export function runState(summary, live) {
+  if (live) return "live";
+  if (!summary) return "idle";
+  if (summary.delivered === true) return "delivered";
+  if (summary.halted) return "halted";
+  return "failed";
 }
 
 function parseJsonl(file) {
@@ -998,6 +1020,7 @@ export function readRun(runDir, root) {
     stages: new Set(stages.map((s) => s.id)).size,
   };
 
+  const live = !summary && (all.some((c) => c.inFlight) || Date.now() - newest < 90_000);
   return {
     id: base,
     stages,
@@ -1018,7 +1041,8 @@ export function readRun(runDir, root) {
     // is running, so an in-flight call is proof the run is alive. The mtime
     // window is the fallback for the gaps between calls (gate, install, diff),
     // where no model process is writing anything.
-    live: !summary && (all.some((c) => c.inFlight) || Date.now() - newest < 90_000),
+    live,
+    state: runState(summary, live),
     updatedAt: newest,
   };
 }

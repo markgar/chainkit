@@ -37,6 +37,8 @@ export function page() {
          font-size: var(--text-body-medium, 13px); line-height: var(--leading-body-medium, 20px); }
   #top { flex: none; padding: 12px 14px 0;
          border-bottom: 1px solid var(--border-color-muted, #d8dee4); }
+  #top.delivered { border-bottom: 3px solid var(--ok); background: rgba(46, 160, 67, .08); }
+  #top.failed, #top.halted { border-bottom: 3px solid var(--bad); background: rgba(248, 81, 73, .08); }
   /* min-height:0 is load-bearing: a flex child defaults to min-content, so without
      it this box refuses to shrink and the page scrolls as a whole again -- the exact
      bug this rule exists to fix, and it looks like the CSS simply did nothing. */
@@ -51,6 +53,13 @@ export function page() {
            background: var(--background-color-default, #fff); color: inherit; }
   .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; background: var(--muted); }
   .dot.live { background: var(--ok); animation: pulse 1.4s ease-in-out infinite; }
+  .dot.delivered { background: var(--ok); }
+  .dot.failed, .dot.halted { background: var(--bad); }
+  .runstate { margin-left: 4px; padding: 1px 6px; border-radius: 999px; font-size: 10px;
+              font-weight: 700; letter-spacing: .06em; color: var(--muted);
+              border: 1px solid currentColor; }
+  .runstate.live, .runstate.delivered { color: var(--ok); }
+  .runstate.failed, .runstate.halted { color: var(--bad); }
   @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .25 } }
   .cards { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0 6px; }
   .card { border: 1px solid var(--border-color-default, #d0d7de); border-radius: 8px;
@@ -206,7 +215,7 @@ export function page() {
 </head>
 <body>
   <div id="top">
-    <h1><span id="dot" class="dot"></span> chainkit<span id="tagname" style="color:var(--muted);font-weight:400"></span></h1>
+    <h1><span id="dot" class="dot"></span> chainkit<span id="tagname" style="color:var(--muted);font-weight:400"></span><span id="runstate" class="runstate"></span></h1>
     <div class="sub"><select id="runs"></select></div>
     <div id="warn"></div>
     <div id="cards" class="cards"></div>
@@ -354,7 +363,12 @@ function render(s) {
       s.runs.map(r => \`<option value="\${esc(r.id)}">\${esc(r.id)}</option>\`).join("");
     sel.value = pinned;
   }
-  document.getElementById("dot").className = "dot" + (run && run.live ? " live" : "");
+  const state = run?.state || (run?.live ? "live" : "idle");
+  document.getElementById("dot").className = "dot " + state;
+  document.getElementById("top").className = state;
+  const stateEl = document.getElementById("runstate");
+  stateEl.className = "runstate " + state;
+  stateEl.textContent = state === "live" ? "LIVE" : state === "delivered" ? "DELIVERED" : state === "halted" ? "HALTED" : state === "failed" ? "FAILED" : "IDLE";
   // Three panels of the same canvas are otherwise indistinguishable.
   const tagName = pinned && pinned.startsWith("tag:") ? pinned.slice(4) : (run ? (run.id.split("__")[1] || "") : "");
   document.getElementById("tagname").textContent = tagName ? " · " + tagName : "";

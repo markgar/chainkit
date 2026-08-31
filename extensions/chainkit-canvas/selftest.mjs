@@ -14,7 +14,7 @@
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { readRun, listRuns, describeTool, annotateConcurrency } from "./telemetry.mjs";
+import { readRun, listRuns, describeTool, annotateConcurrency, runState } from "./telemetry.mjs";
 import { page } from "./render.mjs";
 import vm from "node:vm";
 
@@ -828,6 +828,20 @@ rmSync(root, { recursive: true, force: true });
   // hour ago" without reading the text.
   eq("each stage card carries its status as a class", html.includes('class="stage s-'), true);
   eq("the stylesheet distinguishes the running stage", html.includes(".stage.s-running"), true);
+  eq("a live run is classified separately", runState(null, true), "live");
+  eq("a successful terminal run says delivered", runState({ delivered: true }, false), "delivered");
+  eq(
+    "an unsuccessful terminal run says failed",
+    runState({ delivered: false, gate: { ok: false } }, false),
+    "failed",
+  );
+  eq(
+    "a halted terminal run says halted",
+    runState({ delivered: false, halted: { kind: "appeal" } }, false),
+    "halted",
+  );
+  eq("the sticky header carries the terminal state", html.includes('id="runstate"'), true);
+  eq("terminal failure changes the whole header", html.includes("#top.failed"), true);
 
   // ONE SCROLLING REGION, NOT A SCROLLING PAGE. The run totals must stay on screen
   // while the chain is scrolled -- they are what a stage's numbers get compared
@@ -1108,6 +1122,22 @@ rmSync(root, { recursive: true, force: true });
       ],
     }),
     "docs/architecture.md, src/config.ts · 4 targets",
+  );
+  eq(
+    "a change snapshot names its base and scope",
+    describeTool("repo_changes", {
+      base: "HEAD^",
+      paths: ["apps/server/src/a.ts", "packages/domain/src/b.ts"],
+    }),
+    "HEAD^ → src/a.ts, src/b.ts",
+  );
+  eq(
+    "a ref reader names the revision and targets",
+    describeTool("repo_read_ref", {
+      ref: "main",
+      targets: [{ path: "docs/architecture.md" }, { path: "CONSTITUTION.md" }],
+    }),
+    "main · docs/architecture.md, CONSTITUTION.md",
   );
   eq(
     "re-reading a spilled tool result is not shown as a file path",
