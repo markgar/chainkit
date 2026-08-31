@@ -393,8 +393,13 @@ function callFiles(stageDir) {
     // this works for an in-flight call too.
     let sessionId = null;
     try {
+      // The whole file, not its first line. The sidecar is named .jsonl but is a
+      // single pretty-printed object, so reading line one yields "{" and throws --
+      // silently, into the catch below, leaving every call sessionless and the
+      // cost fix inert. The selftest fixture wrote it minified and so agreed with
+      // the bug. A fixture must be written the way the kernel actually writes it.
       const raw = readFileSync(path.join(stageDir, `${label}.argv.jsonl`), "utf8");
-      sessionId = JSON.parse(raw.split("\n").find((l) => l.trim()) || "{}").sessionId || null;
+      sessionId = JSON.parse(raw).sessionId || null;
     } catch {
       /* older runs wrote no sidecar */
     }
@@ -698,12 +703,26 @@ export function readRun(runDir, root) {
       if (!byRound.has(r)) byRound.set(r, []);
       byRound.get(r).push(c);
     }
+    // Which round OPENED each session. A round whose session was already open in an
+    // EARLIER round genuinely resumed one; the round that opened it did not, however
+    // loudly the config says `resume: true`. Derived from the calls rather than from
+    // the run record, because the record is only written when a run ENDS -- reading
+    // it there meant a live run could never show the handoff at all.
+    const openedAt = new Map();
+    for (const c of [...calls].sort((a, b) => (a.round || 0) - (b.round || 0)))
+      if (c.sessionId && !openedAt.has(c.sessionId)) openedAt.set(c.sessionId, c.round || 0);
     for (const [round, rounds] of [...byRound.entries()].sort((a, b) => a[0] - b[0])) {
+      const resumedHere = rounds.some(
+        (c) => c.sessionId && openedAt.get(c.sessionId) < (c.round || 0),
+      );
       stages.push({
         id,
         ord,
         iter,
         round,
+        // Observed, not declared. Overwritten below by the run record when one
+        // exists and names WHICH conversation was inherited.
+        resume: resumedHere || null,
         // Unique per ROW now that a stage can appear more than once. The view keys
         // its expand state by this.
         key: round ? `${key}#r${round}` : key,
@@ -933,7 +952,10 @@ export function readRun(runDir, root) {
       const inherited = entries.some(
         (e) => e.sessionId && sessionOpenedAt.get(sessionKey(e)) < (e.round || 0),
       );
-      st.resume = inherited ? declaredResume || true : null;
+      // Only ever UPGRADES the observed fact with the record's richer label (which
+      // conversation was inherited). It must not downgrade to null: the call-derived
+      // evidence above is the same evidence, and is available on a live run too.
+      if (inherited) st.resume = declaredResume || true;
       st.sessionIds = [...new Set(entries.map((e) => e.sessionId).filter(Boolean))];
       st.expects = entries.find((e) => e.expects)?.expects || null;
       // A stage that was handed tools and used none verified nothing, and its output

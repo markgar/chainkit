@@ -670,7 +670,10 @@ rmSync(root, { recursive: true, force: true });
       if (sessionId !== undefined)
         writeFileSync(
           path.join(wdir, dir, `${label}.argv.jsonl`),
-          JSON.stringify({ sessionId, model: "m" }),
+          // PRETTY-PRINTED, because that is how the kernel writes it. Minified here
+          // once, and the reader's "parse the first line" bug passed this suite
+          // while doing nothing at all on a real run.
+          JSON.stringify({ sessionId, model: "m" }, null, 2),
         );
     };
     // Resumed: both rounds on one session, checkpoints cumulative.
