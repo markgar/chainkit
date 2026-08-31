@@ -688,32 +688,50 @@ export function readRun(runDir, root) {
   //
   // Matched on the BASE id, so a fan-out stage that ran four iterations is not
   // re-added as a fifth, pending, row that never resolves.
+  const preOrder = readCallOrder(runDir);
   const seen = new Set(stages.map((s) => s.id));
   const maxIter = stages.reduce((n, s) => Math.max(n, s.iter || 0), 0);
+  // A stage with NO model call leaves no log directory, so a fan-out command stage
+  // is invisible above and gets exactly one declared row -- at element 0, where it
+  // will never run. It then reads "not started" for the whole run while it is in
+  // fact executing once per element. Observed: chunk-facts ran for chunk 1, and the
+  // panel showed it pending below stages that came after it.
+  //
+  // The journal knows which elements it ran in, so give it a row per element, the
+  // same way a model stage earns one per element by leaving a log directory.
+  const journalElems = new Map();
+  for (const key of preOrder?.keys() || []) {
+    const [id, it] = key.split("/");
+    if (!journalElems.has(id)) journalElems.set(id, new Set());
+    journalElems.get(id).add(Number(it) || 0);
+  }
+  const pendingRow = (p, iter) => ({
+    id: p.id,
+    ord: p.ord ?? 0,
+    iter,
+    // A fan-out stage that never ran belongs WITH the fan-out, not ahead of it.
+    // Sorting it by its declared index alone floats `fix` (stage 5, iteration 0)
+    // above `code · 1`, so the one stage that never ran appears first -- which
+    // reads as the run being stuck at the top of the chain.
+    sortIter: p.inForeach ? maxIter : 0,
+    key: iter ? `${p.id}#${iter}` : p.id,
+    label: p.id,
+    rounds: [],
+    aiu: 0,
+    outputTokens: 0,
+    truncated: 0,
+    outputCeiling: null,
+    tools: 0,
+    unmetered: 0,
+    model: p.model || "",
+    inFlight: false,
+    status: "pending",
+  });
   for (const p of plan?.stages || []) {
     if (seen.has(p.id)) continue;
-    stages.push({
-      id: p.id,
-      ord: p.ord ?? 0,
-      iter: 0,
-      // A fan-out stage that never ran belongs WITH the fan-out, not ahead of it.
-      // Sorting it by its declared index alone floats `fix` (stage 5, iteration 0)
-      // above `code · 1`, so the one stage that never ran appears first -- which
-      // reads as the run being stuck at the top of the chain.
-      sortIter: p.inForeach ? maxIter : 0,
-      key: p.id,
-      label: p.id,
-      rounds: [],
-      aiu: 0,
-      outputTokens: 0,
-      truncated: 0,
-      outputCeiling: null,
-      tools: 0,
-      unmetered: 0,
-      model: p.model || "",
-      inFlight: false,
-      status: "pending",
-    });
+    const elems = [...(journalElems.get(p.id) || [])].filter((n) => n > 0).sort((a, b) => a - b);
+    if (elems.length) for (const it of elems) stages.push(pendingRow(p, it));
+    else stages.push(pendingRow(p, 0));
   }
   // Record JSON exists only after the run ends -- optional enrichment. Read BEFORE
   // ordering: its `stageLog` is written in execution order, so a run recorded
@@ -731,7 +749,7 @@ export function readRun(runDir, root) {
 
   // Order, best source first: the live call journal, then the finished record,
   // then inference.
-  let order = readCallOrder(runDir);
+  let order = preOrder;
   if (!order && Array.isArray(summary?.stageLog)) {
     order = new Map();
     summary.stageLog.forEach((e, i) => {

@@ -548,6 +548,42 @@ rmSync(root, { recursive: true, force: true });
     rmSync(live, { recursive: true, force: true });
   }
 
+  // A FAN-OUT COMMAND STAGE. It makes no model call, so it leaves no log directory
+  // and is invisible to the log-dir walk; the declared pipeline then gives it one
+  // row at element 0, where it will never run. It reads "not started" for the whole
+  // run while in fact executing once per element. The journal knows which elements
+  // it ran in, so it earns a row per element the same way a model stage earns one
+  // by leaving a directory.
+  {
+    const fan = path.join(r, "results", "chain-runs", "logs", "c__fan__2026-01-01T00-00-00");
+    mkdirSync(path.join(fan, "01-code~1"), { recursive: true });
+    writeFileSync(
+      path.join(fan, "_chain.json"),
+      JSON.stringify({
+        stages: [
+          { id: "code", inForeach: true },
+          { id: "facts", inForeach: true },
+        ],
+      }),
+    );
+    writeFileSync(
+      path.join(fan, "_calls.jsonl"),
+      [
+        { seq: 1, id: "code", iter: 1, round: 0 },
+        { seq: 2, id: "facts", iter: 1, round: 1 },
+        { seq: 3, id: "code", iter: 2, round: 0 },
+      ]
+        .map((e) => JSON.stringify(e))
+        .join("\n") + "\n",
+    );
+    const f = readRun(fan, r);
+    const facts = f.stages.filter((s) => s.id === "facts");
+    eq("a fan-out command stage gets a row per element it ran in", facts.length, 1);
+    eq("that row is attributed to the element, not element 0", facts[0].iter, 1);
+    eq("and it is not reported as never started", facts[0].status, "ran");
+    rmSync(fan, { recursive: true, force: true });
+  }
+
   // AN ABSENT COST IS NOT A ZERO COST. A stage still running has reported no usage
   // yet, and "0.00 AiU" beside 41 tool calls reads as work done for free. The real
   // figure for the call that prompted this was 58.83 AiU, minutes later.
