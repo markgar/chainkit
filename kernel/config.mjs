@@ -284,12 +284,41 @@ function validateChain(chain, { promptRoot, readPrompt = defaultReadPrompt } = {
   const loopIds = new Set(chain.loop?.stages || []);
   const fe = chain.foreach || null;
   const feIds = new Set(fe?.stages || []);
+  const feLoopIds = new Set(fe?.loop?.stages || []);
   const gateRepairIds = new Set(
     typeof chain.gate === "object" ? chain.gate.repair?.stages || [] : [],
   );
   const available = new Set(Object.keys(chain.seeds || {}));
-  const loopProduces = stages.filter((s) => loopIds.has(s.id)).map((s) => s.produces);
-  const feProduces = stages.filter((s) => feIds.has(s.id)).map((s) => s.produces);
+  const loopProduces = stages.filter((s) => loopIds.has(s.id) && s.produces).map((s) => s.produces);
+  const feProduces = stages.filter((s) => feIds.has(s.id) && s.produces).map((s) => s.produces);
+  const firstPassProducesBefore = new Map();
+  const firstPassProduces = [];
+  for (const id of fe?.stages || []) {
+    if (feLoopIds.has(id)) continue;
+    firstPassProducesBefore.set(id, [...firstPassProduces]);
+    const produced = stages.find((s) => s.id === id)?.produces;
+    if (produced) firstPassProduces.push(produced);
+  }
+
+  const visibleFor = (stage, { after = false } = {}) => {
+    const visible = new Set(available);
+    if (loopIds.has(stage.id)) for (const p of loopProduces) visible.add(p);
+    if (feIds.has(stage.id)) {
+      // Declaration order is not execution order inside a foreach. Loop members do
+      // not run during the first pass, so a first-pass stage cannot read an artifact
+      // that only a loop member produces, even when that producer is declared above
+      // it. Loop members may read the whole foreach set because later rounds consume
+      // artifacts written by earlier rounds.
+      for (const p of feProduces) visible.delete(p);
+      const reachable = feLoopIds.has(stage.id)
+        ? feProduces
+        : firstPassProducesBefore.get(stage.id) || [];
+      for (const p of reachable) visible.add(p);
+      if (fe?.as) visible.add(fe.as);
+    }
+    if (after && stage.produces) visible.add(stage.produces);
+    return visible;
+  };
 
   // WHICH REFERENCES ARE NON-SCALAR, and therefore must never be interpolated into a
   // shell command.
@@ -337,12 +366,7 @@ function validateChain(chain, { promptRoot, readPrompt = defaultReadPrompt } = {
       }
     }
     if (body != null) {
-      const visible = new Set(available);
-      if (loopIds.has(s.id)) for (const p of loopProduces) visible.add(p);
-      if (feIds.has(s.id)) {
-        for (const p of feProduces) visible.add(p);
-        if (fe?.as) visible.add(fe.as);
-      }
+      const visible = visibleFor(s);
       for (const ref of placeholders(body)) {
         // Rooted, not literal: `{{chunk.files}}` is satisfied by whatever provides
         // `chunk`. Comparing the whole dotted string would make every field access
@@ -361,14 +385,7 @@ function validateChain(chain, { promptRoot, readPrompt = defaultReadPrompt } = {
       }
     }
     if (s.completion && typeof s.completion === "object" && typeof s.completion.run === "string") {
-      const visible = new Set(available);
-      if (loopIds.has(s.id)) for (const p of loopProduces) visible.add(p);
-      if (feIds.has(s.id)) {
-        for (const p of feProduces) visible.add(p);
-        if (fe?.as) visible.add(fe.as);
-      }
-      // The postcondition runs after the stage has produced its artifact.
-      if (s.produces) visible.add(s.produces);
+      const visible = visibleFor(s, { after: true });
       for (const ref of placeholders(s.completion.run)) {
         if (!visible.has(rootOf(ref)))
           errors.push(
@@ -702,6 +719,7 @@ export function selfTest() {
     "loop.md": "use {{verdict}}",
     "fe-code.md": "build {{chunk}} per {{plan}}",
     "fe-review.md": "judge {{chunk.files}}",
+    "fe-facts-review.md": "judge {{facts}}",
     "fe-fix.md": "fix per {{verdict}}",
     "fe-fix-field.md": "fix per {{verdict.findings}}",
     "asks.md": "read {{spec}} and answer with pass (boolean) and findings (array)",
@@ -1338,6 +1356,34 @@ export function selfTest() {
     "an inner loop stage outside the foreach is an error",
     FE({ loop: { stages: ["plan"], until: "verdict.pass", max: 3 } }).some((e) =>
       e.includes("not one of the foreach stages"),
+    ),
+  ]);
+  CASES.push([
+    "a first-pass stage cannot read an artifact produced only inside the inner loop",
+    V({
+      ...feChain,
+      stages: [
+        feChain.stages[0],
+        feChain.stages[1],
+        { id: "facts", run: "echo '{}'", parse: "json", produces: "facts" },
+        {
+          id: "review",
+          prompt: "fe-facts-review.md",
+          produces: "verdict",
+          parse: "json",
+        },
+        feChain.stages[3],
+      ],
+      foreach: {
+        ...feChain.foreach,
+        stages: ["code", "facts", "review", "fix"],
+        loop: { stages: ["facts", "fix"], until: "verdict.pass", max: 3 },
+      },
+    }).some(
+      (e) =>
+        e.includes('stage "review"') &&
+        e.includes("{{facts}}") &&
+        e.includes("no earlier stage produces"),
     ),
   ]);
   CASES.push([
