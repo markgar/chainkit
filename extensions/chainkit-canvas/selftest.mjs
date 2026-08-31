@@ -829,6 +829,52 @@ rmSync(root, { recursive: true, force: true });
   eq("each stage card carries its status as a class", html.includes('class="stage s-'), true);
   eq("the stylesheet distinguishes the running stage", html.includes(".stage.s-running"), true);
 
+  // ONE SCROLLING REGION, NOT A SCROLLING PAGE. The run totals must stay on screen
+  // while the chain is scrolled -- they are what a stage's numbers get compared
+  // against. Asserted structurally because the failure mode is silent: drop the
+  // min-height and the layout renders identically until you scroll.
+  eq(
+    "the summary sits in a header outside the scrolling region",
+    html.includes('<div id="top">'),
+    true,
+  );
+  eq(
+    "the run picker is inside that header",
+    html.indexOf('<div id="top">') < html.indexOf('id="runs"'),
+    true,
+  );
+  eq(
+    "the totals are inside that header",
+    html.indexOf('id="cards"') < html.indexOf('<div id="body">'),
+    true,
+  );
+  eq("only the chain scrolls", /#body \{[^}]*overflow: auto/.test(html), true);
+  eq("and it is allowed to shrink enough to do so", /#body \{[^}]*min-height: 0/.test(html), true);
+  eq("the page itself does not scroll", /body \{[^}]*overflow: hidden/.test(html), true);
+  // The chunk headers were already sticky. They now stick to the top of that
+  // region rather than to a viewport the header has scrolled out of.
+  eq(
+    "chunk headers are still sticky inside it",
+    /\.ghead \{[^}]*position: sticky/.test(html),
+    true,
+  );
+
+  // The resume note sits with the other stage facts -- "reasons only", the expects
+  // contract -- at their weight. It was a bordered YELLOW pill on a line of its own,
+  // which gave a routine property of a resumed round the visual weight of a defect.
+  // Pinned in both directions so "quiet" cannot silently become "deleted".
+  eq(
+    "the resume note carries no warning styling",
+    /class="chan warn"[^>]*resumes/.test(html),
+    false,
+  );
+  eq("it sits with the other stage facts", /if \(rsm\) bits\.push\(rsm\)/.test(html), true);
+  eq(
+    "it names the stage with the chain's own word",
+    html.includes("previous ${st.id} context"),
+    true,
+  );
+
   // A CUT-OFF stage must show the WHOLE answer, not its tail. The motivating
   // panel opened mid-word at "undred ms" because only the last assistant
   // message survived; the earlier calls existed but were never read.

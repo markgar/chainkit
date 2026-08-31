@@ -22,11 +22,25 @@ export function page() {
   :root { --ok: var(--true-color-green, #1a7f37); --bad: var(--true-color-red, #cf222e);
           --warn: var(--true-color-yellow, #9a6700); --muted: var(--text-color-muted, #656d76); }
   * { box-sizing: border-box; }
-  body { margin: 0; padding: 12px 14px 32px;
+  /* THE RUN HEADER DOES NOT SCROLL AWAY. Every number that describes the run as a
+     whole -- which run it is, whether it is live, stages/calls/tools/tokens/AiU --
+     lives above the chain. A run is thousands of lines long, so scrolling to read
+     any of it took all of that off screen, and the reader lost the totals exactly
+     when comparing a stage against them. The page is a fixed header plus ONE
+     scrolling region, so the chunk headers (already sticky) now stick to the top of
+     that region rather than to a viewport the header has left. */
+  html, body { height: 100%; }
+  body { margin: 0; padding: 0; display: flex; flex-direction: column; overflow: hidden;
          background: var(--background-color-default, #fff);
          color: var(--text-color-default, #1f2328);
          font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
          font-size: var(--text-body-medium, 13px); line-height: var(--leading-body-medium, 20px); }
+  #top { flex: none; padding: 12px 14px 0;
+         border-bottom: 1px solid var(--border-color-muted, #d8dee4); }
+  /* min-height:0 is load-bearing: a flex child defaults to min-content, so without
+     it this box refuses to shrink and the page scrolls as a whole again -- the exact
+     bug this rule exists to fix, and it looks like the CSS simply did nothing. */
+  #body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 0 14px 32px; }
   h1 { font-size: var(--text-title-medium, 16px); font-weight: var(--font-weight-semibold, 600);
        margin: 0 0 2px; display: flex; align-items: center; gap: 8px; }
   code, .mono { font-family: var(--font-mono, "SFMono-Regular", Consolas, monospace);
@@ -191,11 +205,13 @@ export function page() {
 </style>
 </head>
 <body>
-  <h1><span id="dot" class="dot"></span> chainkit<span id="tagname" style="color:var(--muted);font-weight:400"></span></h1>
-  <div class="sub"><select id="runs"></select></div>
-  <div id="warn"></div>
-  <div id="cards" class="cards"></div>
-  <div id="spend" class="spend"></div>
+  <div id="top">
+    <h1><span id="dot" class="dot"></span> chainkit<span id="tagname" style="color:var(--muted);font-weight:400"></span></h1>
+    <div class="sub"><select id="runs"></select></div>
+    <div id="warn"></div>
+    <div id="cards" class="cards"></div>
+    <div id="spend" class="spend"></div>
+  </div>
   <div id="body"></div>
 
 <script>
@@ -406,6 +422,27 @@ function render(s) {
       }</div></div>\`).join("")}</div>\`;
   }
 
+  // Whether THIS call continued a previous one's conversation. Rendered as a plain
+  // channel pill, the same weight as "reasons only" and the expects contract: it is
+  // a routine property of a resumed stage's later rounds. It was a bordered YELLOW
+  // pill on a line of its own, which gave that routine fact the visual weight of a
+  // defect and dominated the row.
+  //
+  // Observed, not declared. The config flag is true of EVERY round including the
+  // first, and the first round has no previous conversation to continue -- it OPENS
+  // the session the later rounds inherit. A row that has run reports only what the
+  // session ids show; a row that has not run yet may only PREDICT, and only when
+  // there is an earlier round for it to resume.
+  function resumeNote(st) {
+    const predicted = (st.round || 0) > 1 ? st.declared?.resume : null;
+    const inherits = st.resume || (st.status === "ran" ? null : predicted);
+    if (!inherits) return "";
+    // Named with the chain's OWN word for the stage, the same way the fan-out unit
+    // is. The view still has no idea what a "fix" is; it just repeats the label.
+    const what = inherits === true ? \`previous \${st.id} context\` : \`\${inherits} context\`;
+    return \`<span class="chan" title="this call continued the previous round's conversation instead of starting cold">↩ resumes \${esc(what)}</span>\`;
+  }
+
   // The handoffs that are NOT model calls. A stage's files and its inherited
   // session are how most work actually moves between stages, and until now the
   // view showed neither -- so a chain could look like a tidy sequence of prompts
@@ -419,18 +456,12 @@ function render(s) {
     if (st.declared && st.declared.tools === false)
       bits.push('<span class="chan">reasons only</span>');
     if (st.declared?.inLoop) bits.push('<span class="chan">in loop</span>');
-    // The same falsehood, one step subtler: declared resume is true of EVERY
-    // round of a resumed stage including the first, and round 1 has no previous
-    // conversation -- it OPENS the session the later rounds inherit. So a row that
-    // has run reports only what telemetry observed, and a row that has not yet run
-    // may only PREDICT a resume when there is an earlier round for it to resume.
-    const observed = st.resume;
-    const predicted = (st.round || 0) > 1 ? st.declared?.resume : null;
-    const inherits = observed || (st.status === "ran" ? null : predicted);
-    if (inherits)
-      bits.push(
-        \`<span class="chan warn" title="this stage inherited another stage's whole conversation">↩ resumes \${esc(inherits === true ? "previous round" : inherits)}</span>\`,
-      );
+    // Same weight as the rest: a resumed session is a handoff fact about the stage,
+    // exactly like the tools it was given and the contract it must satisfy. Guarded
+    // rather than pushed unconditionally -- an empty string is still an entry, and
+    // would render an empty channel row under every stage that resumed nothing.
+    const rsm = resumeNote(st);
+    if (rsm) bits.push(rsm);
     if (st.declaredToolsUnused)
       bits.push(
         \`<span class="chan warn" title="this stage was given tools and called none — its output was not checked against the repo">⚠ tools unused</span>\`,
