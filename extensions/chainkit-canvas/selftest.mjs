@@ -847,6 +847,13 @@ rmSync(root, { recursive: true, force: true });
   eq("the page's inline script parses", syntaxError, null);
   eq("the page renders the non-model channels", html.includes("chans"), true);
   eq(
+    "declared completion is visible as an upfront exit criterion",
+    html.includes("<b>Exit criterion</b>") &&
+      html.includes("up to ${attempts} attempt") &&
+      html.includes("completion.run"),
+    true,
+  );
+  eq(
     "call disclosure uses a keyboard-accessible button",
     html.includes('<button type="button" class="chead"') &&
       html.includes('aria-expanded="') &&
