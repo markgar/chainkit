@@ -331,6 +331,14 @@ async function execute(stage, round = 0, iter = 0) {
     wallMs: res.wallMs ?? Date.now() - t0,
     rawPath: res.rawPath || null,
     recoveredFromCalls: res.recoveredFromCalls ?? null,
+    // WHICH tools a stage reached for, not just whether it had any. The parser
+    // has always computed this and the record has always dropped it, so the one
+    // question a tool experiment turns on -- "did it use the tool we built, or
+    // fall back to the shell?" -- could only be answered by re-parsing the raw
+    // logs with a throwaway script. Persist it: the record is the durable
+    // artifact, the logs are raw material that a `--results` move leaves behind.
+    toolCalls: res.telemetry?.toolCallCount ?? null,
+    toolCallsByName: res.telemetry?.toolCallsByName ?? null,
   });
 
   // A MODEL stage configured WITHOUT tools cannot write, so the designer canvas
