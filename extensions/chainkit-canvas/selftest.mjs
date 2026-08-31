@@ -577,6 +577,45 @@ rmSync(root, { recursive: true, force: true });
   eq("an escaped-newline payload is unescaped for display", sayText("a\\nb\\nc"), "a\nb\nc");
   eq("ordinary multi-line prose is left alone", sayText("a\nb"), "a\nb");
 
+  // Same reasoning for `sayHtml`: run the EMITTED function. Its regexes carry an
+  // \x60 escape precisely because a literal backtick cannot appear in that file,
+  // and whether that survives escape processing is only answerable by running it.
+  const hFrom = src.indexOf("const sayHtml =");
+  const hDecl = src.slice(hFrom, src.indexOf(";\n//", hFrom) + 1);
+  const hCtx = {
+    out: null,
+    esc: (s) =>
+      String(s ?? "").replace(
+        /[&<>"]/g,
+        (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c],
+      ),
+  };
+  vm.createContext(hCtx);
+  new vm.Script(hDecl + "\nout = sayHtml;").runInContext(hCtx);
+  const sayHtml = hCtx.out;
+  eq(
+    "a heading becomes a heading",
+    sayHtml("## Issue: limiter"),
+    '<b class="mdh">Issue: limiter</b>',
+  );
+  eq("bold becomes bold", sayHtml("**File:** x"), "<strong>File:</strong> x");
+  eq(
+    "inline code becomes code",
+    sayHtml("call " + String.fromCharCode(96) + "esc()" + String.fromCharCode(96)),
+    "call <code>esc()</code>",
+  );
+  // The whole reason markup is applied AFTER escaping.
+  eq(
+    "model output cannot inject html",
+    sayHtml("<img src=x onerror=alert(1)>"),
+    "&lt;img src=x onerror=alert(1)&gt;",
+  );
+  eq(
+    "an unmatched asterisk is left alone",
+    sayHtml("2 * 3 and **real** bold"),
+    "2 * 3 and <strong>real</strong> bold",
+  );
+
   // The repaint guard, EXECUTED. A parse check would not have caught what it
   // shipped first: the setter body was rewritten to assign through itself, an
   // infinite recursion that is perfectly valid syntax.

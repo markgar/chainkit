@@ -113,6 +113,11 @@ export function page() {
   /* A long final message used to render as one unbounded wall, pushing the rest
      of the run off screen. Cap it and let it scroll in place. */
   .say { max-height: 260px; overflow: auto; }
+  .say .mdh { display: block; margin: 8px 0 3px; font-size: 12px; }
+  .say .mdh:first-child { margin-top: 0; }
+  .say code { font-family: var(--font-mono, "SFMono-Regular", Consolas, monospace);
+              font-size: 11px; padding: 0 3px; border-radius: 3px;
+              background: var(--background-color-neutral, rgba(127,127,127,.18)); }
   .empty { color: var(--muted); padding: 24px 0; }
   .warn { background: #3a2a00; border: 1px solid #7a5a00; color: #ffd479; padding: 8px 10px;
           border-radius: 6px; margin-bottom: 10px; font-size: 12px; line-height: 1.45; }
@@ -175,6 +180,18 @@ const sayText = (t) => {
   const real = (str.match(/\\n/g) || []).length;
   return escaped > real ? str.replace(/\\\\n/g, "\\n") : str;
 };
+// Render the small markdown subset models actually emit -- headings, bold, and
+// inline code. A reviewer's verdict is written as markdown, and shown raw it reads
+// as a wall of asterisks and hashes exactly where the emphasis was meant to help.
+//
+// Escaping happens FIRST and the markup is applied to already-escaped text, so no
+// model output can inject HTML. Note \x60 rather than a literal backtick: this file
+// is one big template literal.
+const sayHtml = (t) =>
+  esc(t)
+    .replace(/^(#{1,6})\\s+(.*)$/gm, (_m, _h, s) => '<b class="mdh">' + s + "</b>")
+    .replace(/\\*\\*([^*\\n]+)\\*\\*/g, "<strong>$1</strong>")
+    .replace(/\\x60([^\\x60\\n]+)\\x60/g, "<code>$1</code>");
 // One call open at a time. A null openKey means "follow the newest call", which is
 // what makes a live run watchable without clicking; any manual click pins that call.
 let openKey = null;
@@ -350,7 +367,7 @@ function render(s) {
         const out = outputHtml(p.output);
         const toolw = Math.max(10, ...p.steps.filter(x => x.kind !== "say").map(x => (x.name || "").length + 1));
         const steps = p.steps.map(x => x.kind === "say"
-          ? \`<div class="say\${st.truncated ? " cut-body" : ""}">\${esc(sayText(x.text))}</div>\`
+          ? \`<div class="say\${st.truncated ? " cut-body" : ""}">\${sayHtml(sayText(x.text))}</div>\`
           : \`<div class="step"><span class="st \${x.status}">\${x.status === "ok" ? "✓" : x.status === "failed" ? "✗" : x.status === "running" ? "◐" : "·"}</span><span class="tool">\${esc(x.name)}</span><span class="detail mono">\${esc(x.detail)}</span></div>\`
         ).join("") || (out ? "" : '<div class="step"><span class="detail">no tool calls recorded</span></div>');
         return \`<div class="call \${isOpen ? "open" : ""}" data-key="\${esc(key)}">
