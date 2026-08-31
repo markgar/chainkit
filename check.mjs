@@ -160,6 +160,28 @@ function checkChains() {
   return { ok: problems.length === 0, out: problems.join("\n") };
 }
 
+// A HOST'S CHAIN DIRECTORY USUALLY CONTAINS CODE, and that code decides things.
+//
+// A chain is not only prompts and YAML. The host keeps deterministic scripts beside
+// them -- the checks worth doing for free, before a model is paid to do arithmetic --
+// and those scripts are gates. Their verdicts halt runs and send repair stages to
+// work. They are the highest-leverage code in the whole arrangement and, until this
+// existed, nothing ran a single test of them.
+//
+// It cost a run to notice. A plan gate judged every chunk against the base commit,
+// as if each ran first, so a chunk verifying an earlier chunk's output was told its
+// files did not exist. The plan was fine. The gate was wrong, it was wrong
+// confidently, and it emitted well-formed JSON saying so -- which is precisely the
+// shape of failure a selftest catches and no amount of reading catches.
+//
+// So: any `*.selftest.mjs` under a `--chains` root is run here, by the same gate
+// that runs the engine's own. The engine learns nothing about the host in the
+// process -- it discovers a filename convention and executes it, exactly as it
+// already does for the canvases.
+const hostSuites = extraChainRoots.flatMap((root) =>
+  findFiles(root, (f) => f.endsWith(".selftest.mjs")),
+);
+
 const steps = [
   // Formatting and lint run from the host root so they pick up its shared config.
   // Standalone, these become the repo's own `prettier --check .` / `eslint .`.
@@ -173,6 +195,14 @@ const steps = [
     cmd: "node",
     args: [f],
     cwd: path.dirname(f),
+  })),
+  // Run from the chain root, not the script's own directory: a host gate resolves
+  // repo paths against the root it would really run in.
+  ...hostSuites.map((f) => ({
+    name: `selftest:${path.basename(f).replace(/\.selftest\.mjs$/, "")}`,
+    cmd: "node",
+    args: [f],
+    cwd: hostRoot,
   })),
 ];
 

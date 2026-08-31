@@ -192,6 +192,70 @@ export function exhaustedHalt(loop, satisfied) {
   };
 }
 
+// Is this round a repeat of the last one? Returns a halt record or null.
+//
+// The decision, stated once so it can be tested: a loop that produced a
+// byte-identical condition artifact AND touched no file has nothing new to act on.
+// Both halves are required. The artifact alone is not enough -- a terse verdict
+// ("{"pass": false}") repeats verbatim while a fixer does real work in the tree, and
+// halting there would kill a converging loop. An untouched tree alone is not enough
+// either: a reasoning-only loop never touches the tree and can still be making
+// progress in its artifacts.
+//
+// `exhausted` answers "the budget ran out". This answers "the budget did not
+// matter", which is a different fault with a different fix -- one is a config that
+// needs more rounds, the other is a repair stage that cannot move.
+export function noProgressHalt({ condRoot, previous, current, filesTouched, round }) {
+  if (previous === null || previous === undefined) return null;
+  if (current !== previous) return null;
+  if (filesTouched !== 0) return null;
+  return {
+    stage: "loop",
+    kind: "no-progress",
+    reason:
+      `loop made no progress: "${condRoot}" is byte-identical to round ${round - 1} and no ` +
+      `file changed. The repair stage is not moving anything the check reads — rerunning ` +
+      `it would repeat this round exactly.`,
+  };
+}
+
+// Was a stage given tools it never used? Returns a warning string or null.
+//
+// A stage is given tools because its job needs evidence. Zero calls means the answer
+// was produced from the prompt alone -- a guess wearing the shape of a verdict, and
+// indistinguishable downstream from a checked one. `run` stages are exempt: they
+// carry no `tools` key at all.
+export function unusedToolsWarning(stage, toolCallCount, round = 0) {
+  if (stage.run) return null;
+  if (!(stage.tools === true || Array.isArray(stage.tools))) return null;
+  if (toolCallCount !== 0) return null;
+  const declared = Array.isArray(stage.tools) ? ` (${stage.tools.join(", ")})` : "";
+  return (
+    `stage "${stage.id}"${round ? ` round ${round}` : ""} was given tools${declared} and ` +
+    `called none — its output was not checked against the repo`
+  );
+}
+
+// Did a stage contest the check instead of complying? Returns a halt record or null.
+//
+// `appeal` is reserved on any json artifact, belongs to no particular stage, and is
+// the only way a chain can say "the finding is wrong" -- without it a false positive
+// leaves a repair stage with no legal move at all. It HALTS on purpose: an appeal
+// that let the run continue would be a model overruling its own gate.
+export function appealHalt(stage, value, { round = 0, iter = 0 } = {}) {
+  const appeal = value && typeof value === "object" ? value.appeal : null;
+  if (!appeal) return null;
+  const text = typeof appeal === "string" ? appeal : appeal.reason || JSON.stringify(appeal);
+  return {
+    stage: stage.id,
+    round,
+    iter,
+    kind: "appeal",
+    reason: `stage "${stage.id}" contests the check it was asked to satisfy: ${text}`,
+    appeal,
+  };
+}
+
 export function selfTest() {
   const CASES = [];
   const ctxOf = (o) => ({ has: (n) => n in o, get: (n) => o[n] });
@@ -412,6 +476,93 @@ export function selfTest() {
       return sl.pre.length === 0 && sl.mid.length === 0 && sl.post.length === 0;
     })(),
   ]);
+
+  // NO PROGRESS. Both halves are load-bearing; each case below fails if either is
+  // dropped.
+  {
+    const np = (o) => noProgressHalt({ condRoot: "v", round: 2, ...o });
+    CASES.push([
+      "an identical verdict with an untouched tree is no progress",
+      np({ previous: '{"pass":false}', current: '{"pass":false}', filesTouched: 0 })?.kind ===
+        "no-progress",
+    ]);
+    CASES.push([
+      "an identical verdict is fine if the round changed files",
+      np({ previous: '{"pass":false}', current: '{"pass":false}', filesTouched: 3 }) === null,
+    ]);
+    CASES.push([
+      "a changed verdict is progress even with an untouched tree",
+      np({ previous: '{"pass":false,"n":1}', current: '{"pass":false,"n":2}', filesTouched: 0 }) ===
+        null,
+    ]);
+    CASES.push([
+      "the first round has nothing to compare against",
+      np({ previous: null, current: '{"pass":false}', filesTouched: 0 }) === null,
+    ]);
+    CASES.push([
+      "no-progress names the round it repeated",
+      np({ previous: "x", current: "x", filesTouched: 0 }).reason.includes("round 1"),
+    ]);
+  }
+
+  // DECLARED TOOLS, NEVER USED.
+  {
+    const S = (o) => ({ id: "gate-fix", ...o });
+    CASES.push([
+      "a stage that declares tools and calls none is flagged",
+      unusedToolsWarning(S({ tools: ["repo_read", "grep"] }), 0).includes("called none"),
+    ]);
+    CASES.push([
+      "the flag names the tools it was given",
+      unusedToolsWarning(S({ tools: ["repo_read", "grep"] }), 0).includes("repo_read, grep"),
+    ]);
+    CASES.push([
+      "tools: true with no calls is flagged too",
+      unusedToolsWarning(S({ tools: true }), 0) !== null,
+    ]);
+    CASES.push([
+      "a stage that used its tools is not flagged",
+      unusedToolsWarning(S({ tools: true }), 4) === null,
+    ]);
+    CASES.push([
+      "a reasoning stage is not flagged for having no tools",
+      unusedToolsWarning(S({ tools: false }), 0) === null,
+    ]);
+    CASES.push([
+      "a command stage is exempt",
+      unusedToolsWarning({ id: "check", run: "node x.mjs" }, 0) === null,
+    ]);
+    CASES.push([
+      "an unknown tool-call count is not evidence of anything",
+      unusedToolsWarning(S({ tools: true }), null) === null,
+    ]);
+  }
+
+  // APPEAL.
+  {
+    const st = { id: "gate-fix" };
+    CASES.push([
+      "an appeal halts the run",
+      appealHalt(st, { appeal: "the checker judges every chunk against base" })?.kind === "appeal",
+    ]);
+    CASES.push([
+      "the appeal's argument is carried in the halt",
+      appealHalt(st, { appeal: "judged against base" }).reason.includes("judged against base"),
+    ]);
+    CASES.push([
+      "an object appeal is read for its reason",
+      appealHalt(st, { appeal: { reason: "c7 verifies earlier chunks" } }).reason.includes(
+        "c7 verifies earlier chunks",
+      ),
+    ]);
+    CASES.push([
+      "the evidence survives on the halt record",
+      appealHalt(st, { appeal: { reason: "r", evidence: ["c1"] } }).appeal.evidence[0] === "c1",
+    ]);
+    CASES.push(["an ordinary verdict is not an appeal", appealHalt(st, { pass: false }) === null]);
+    CASES.push(["a text artifact is not an appeal", appealHalt(st, "some prose") === null]);
+    CASES.push(["a null artifact is not an appeal", appealHalt(st, null) === null]);
+  }
 
   return CASES;
 }

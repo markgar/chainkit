@@ -457,6 +457,26 @@ rmSync(root, { recursive: true, force: true });
     "skipped",
   );
 
+  // A STAGE HANDED TOOLS THAT CALLED NONE. It is `ok`, so nothing else about it
+  // looks unusual -- which is exactly why the flag has to survive into the view.
+  write({
+    stageLog: [
+      { id: "cmd", wallMs: 46 },
+      { id: "think", wallMs: 900, declaredToolsUnused: true },
+    ],
+  });
+  const unused = readRun(dir, r);
+  eq(
+    "a stage that never used its declared tools is flagged in the view",
+    unused.stages.find((s) => s.id === "think").declaredToolsUnused,
+    true,
+  );
+  eq(
+    "a stage that did use them is not",
+    unused.stages.find((s) => s.id === "cmd").declaredToolsUnused,
+    false,
+  );
+
   rmSync(r, { recursive: true, force: true });
 }
 

@@ -774,6 +774,10 @@ export function readRun(runDir, root) {
       st.resume = entries.find((e) => e.resume)?.resume || null;
       st.sessionIds = [...new Set(entries.map((e) => e.sessionId).filter(Boolean))];
       st.expects = entries.find((e) => e.expects)?.expects || null;
+      // A stage that was handed tools and used none verified nothing, and its output
+      // is otherwise indistinguishable from a checked one. The run record carries the
+      // fact; without this the canvas would show a normal green stage.
+      st.declaredToolsUnused = entries.some((e) => e.declaredToolsUnused) || false;
     }
   }
   // Round-over-round artifact values, so a loop can be read as converging or

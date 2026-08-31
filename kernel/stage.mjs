@@ -164,6 +164,49 @@ function typeOf(v) {
   return typeof v;
 }
 
+// THE APPEAL AFFORDANCE IS THE ENGINE'S TO STATE, not the prompt author's.
+//
+// A stage cannot use a way out it was never told about, so `appeal` is worth nothing
+// until something puts it in the prompt. The question is who. Writing it into each
+// repo's prompt files would put process knowledge -- how this engine handles a
+// disputed finding -- into the part of the chain that is supposed to describe only
+// the work, and it would have to be repeated in every prompt of every chain, drift
+// between them, and silently go missing from the one stage that needed it.
+//
+// So the kernel appends it, uniformly. This is not the kernel learning about stage
+// kinds: it does not ask what a stage is for, only whether the stage can express an
+// appeal at all. `parse: json` is exactly that set -- a text stage's artifact has no
+// field for the kernel to read, so telling it about `appeal` would be an offer it
+// cannot take. The affordance is coextensive with the ability to use it.
+//
+// Deliberately understated: it is a last resort, it requires evidence, and it stops
+// the run rather than continuing it. A stage that reads this as an easy exit from
+// hard work would be worse than one that never appeals.
+const APPEAL_NOTE = `
+
+---
+
+## If the finding you were given is wrong
+
+You are expected to comply with the check you were asked to satisfy. Occasionally you
+cannot, because the finding itself is incorrect — the check misread the repo, or it
+asserts something contradicted by the evidence, and every action open to you would
+make the work worse rather than better.
+
+In that case do not comply, and do not pretend to. Return your normal JSON object
+with one extra top-level field:
+
+"appeal": { "reason": "<what the check got wrong, in one or two sentences>", "evidence": ["<concrete, checkable facts — file paths, chunk ids, what you actually looked at>"] }
+
+This STOPS the run and hands your argument to a human. It is not a way to decline
+work you find difficult, and it is not a way to proceed: nothing continues after it.
+Use it only when you have looked, and the check is wrong. If you can comply, comply.`;
+
+function appendAppealNote(prompt, stage) {
+  if (stage.parse !== "json") return prompt;
+  return prompt + APPEAL_NOTE;
+}
+
 export async function runStage({
   stage,
   ctx,
@@ -179,7 +222,7 @@ export async function runStage({
   // render() THROWS on a placeholder no stage produced. That is deliberate: a
   // prompt that silently loses its spec section still looks well-formed and still
   // returns a plausible answer, and nothing downstream can tell.
-  const prompt = render(template, ctx);
+  const prompt = appendAppealNote(render(template, ctx), stage);
 
   const label = `${stage.id}${iter ? `.i${iter}` : ""}${round ? `.r${round}` : ""}`;
   // ONE LOG DIR PER ITERATION. Under a fan-out the same stage id runs N times, and
@@ -617,6 +660,33 @@ export function selfTest() {
     "a declared field that is present and false passes",
     checkShape({ pass: false, findings: [] }, shape).length === 0,
   ]);
+
+  // THE APPEAL NOTE reaches exactly the stages that can act on it.
+  {
+    const p = "Do the work.";
+    CASES.push([
+      "a json stage is told it may appeal",
+      appendAppealNote(p, { parse: "json" }).includes('"appeal"'),
+    ]);
+    CASES.push([
+      "a text stage is not offered a field it cannot express",
+      appendAppealNote(p, { parse: "text" }) === p,
+    ]);
+    CASES.push(["an unparsed stage is left alone", appendAppealNote(p, {}) === p]);
+    CASES.push([
+      "the original prompt survives verbatim ahead of the note",
+      appendAppealNote(p, { parse: "json" }).startsWith(p),
+    ]);
+    // The note must not read as an easy exit, or it becomes one.
+    CASES.push([
+      "the note says an appeal stops the run",
+      /STOPS the run/.test(APPEAL_NOTE) && /not a way to proceed/.test(APPEAL_NOTE),
+    ]);
+    CASES.push([
+      "the note demands evidence",
+      /evidence/.test(APPEAL_NOTE) && /If you can comply, comply/.test(APPEAL_NOTE),
+    ]);
+  }
 
   return CASES;
 }

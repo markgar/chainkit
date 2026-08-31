@@ -22,6 +22,9 @@ import {
   scopedNames,
   conditionMet,
   exhaustedHalt,
+  noProgressHalt,
+  unusedToolsWarning,
+  appealHalt,
   linearSlots,
 } from "./kernel/foreach.mjs";
 import { reduceCumulative } from "./kernel/cost.mjs";
@@ -365,6 +368,30 @@ async function execute(stage, round = 0, iter = 0) {
     return false;
   }
 
+  // THE MIRROR IMAGE, and the one that stayed invisible: a stage GIVEN tools that
+  // never picks one up.
+  //
+  // Tools are declared on a stage because the job needs evidence -- "confirm the
+  // file this guards on is one the chunk creates" cannot be answered from the
+  // prompt text alone. A stage that answers it with zero tool calls did not check
+  // anything; it produced a confident guess in the shape of a verdict. That output
+  // is indistinguishable from a verified one downstream, which is what makes this
+  // worth recording rather than leaving to a reader of the logs.
+  //
+  // Measured: a repair stage declared four read tools, called none of them, twice,
+  // and rewrote the artifact blind both times to a byte-identical result. Nothing in
+  // the record said so -- the stage was `ok`, so it read as a stage that worked.
+  //
+  // A warning, not a halt: a stage may legitimately have nothing to look up, and a
+  // gate that stops the run over an unused affordance would be worse than the gap.
+  // The record carries the fact; the operator decides what it means.
+  const note = unusedToolsWarning(stage, res.telemetry?.toolCallCount ?? null, round);
+  if (note) {
+    stageLog[stageLog.length - 1].declaredToolsUnused = true;
+    warnings.push(note);
+    console.log(`   ⚠ ${note}`);
+  }
+
   if (!res.ok) {
     console.log(`   ✗ ${res.error}`);
     if (!stage.optional)
@@ -378,6 +405,37 @@ async function execute(stage, round = 0, iter = 0) {
       };
     return false;
   }
+  // APPEAL — the move a chain could not make, and the reason a false positive was
+  // unsurvivable.
+  //
+  // chainkit's whole vocabulary between stages is {pass, halt}. A repair stage is
+  // scoped to the ARTIFACT, never to the CHECK: it may rewrite the plan, and it may
+  // not say "the plan is fine, the checker is wrong". So when a check produces a
+  // finding that is false, the repair stage has no legal move. Measured, twice, in
+  // one run: a plan gate raised six impossible problems, the fixer was forbidden
+  // from deleting the checks (anti-widening) and from claiming the files
+  // (ownership), so it burned the loop to exhaustion changing nothing, and the run
+  // ended reading like the plan was bad. It was not.
+  //
+  // `appeal` is a reserved field on any stage's json artifact. It belongs to no
+  // particular stage -- there are no stage kinds here, so this is available to every
+  // stage in every chain, and the kernel never learns which one used it.
+  //
+  // WHAT IT DELIBERATELY DOES NOT DO: it does not let the run continue. An appeal
+  // that grants permission to proceed is a model overruling its own gate, which is
+  // the manufactured green this project has already watched happen once. So it
+  // halts -- but as its own recorded outcome, with the argument attached, costing
+  // one round instead of the whole budget, and pointing the operator at the checker
+  // rather than at the work. Whether a sustained appeal may then resume is a
+  // separate decision, made by a human, on evidence this halt is what produces.
+  const appealed = appealHalt(stage, res.value, { round, iter });
+  if (appealed && !halted) {
+    console.log(`   ⚖ stage "${stage.id}" contests the finding rather than complying`);
+    halted = appealed;
+    if (stage.produces) ctx.set(stage.produces, res.value, stage.id, round);
+    return false;
+  }
+
   // A stage with no `produces` still ran and still changed the tree -- that is its
   // product. Only the store entry is skipped.
   if (stage.produces) ctx.set(stage.produces, res.value, stage.id, round);
@@ -422,6 +480,31 @@ for (const stage of slots.pre) {
 let rounds = 0;
 if (chain.loop && !halted) {
   const cond = chain.loop.until;
+  // NO PROGRESS IS A REASON TO STOP, and the engine already holds the evidence.
+  //
+  // A loop is `[check, fix]`. If the check's verdict comes back byte-identical to
+  // last round's AND the round changed no file, the fix stage did not move anything
+  // the check can see. Every remaining round is a rerun of one that already failed,
+  // at full price, and the run ends on `exhausted` -- a reason that describes the
+  // budget rather than the failure and sends the reader to the logs to find out
+  // what actually happened.
+  //
+  // Measured: a run whose two rounds produced an identical six-item problem list.
+  // The repair stage had no legal move -- the finding was a false positive, and the
+  // rules forbade both fixes available to it -- so it rewrote the plan blind and
+  // changed nothing. The engine had both facts in hand and drew no conclusion.
+  //
+  // The file check is what makes this safe. A terse verdict (`{"pass": false}`)
+  // repeats verbatim while real repair work happens in the tree, and halting there
+  // would kill a healthy loop. Identical verdict AND an untouched tree is the case
+  // where there is genuinely nothing new.
+  //
+  // Honest about the value: in a `max: 2` loop this saves no money, because both
+  // rounds have already run by the time it can fire. What it buys is the diagnosis
+  // -- "no progress" names a stuck repair stage, `exhausted` names a spent budget.
+  // In any longer loop it saves the rest of the budget as well.
+  const condRoot = String(cond).split(".")[0];
+  let lastCond = null;
   while (rounds < chain.loop.max) {
     const done = readPath(ctx, cond);
     if (done === true) break;
@@ -435,6 +518,7 @@ if (chain.loop && !halted) {
       break;
     }
     rounds++;
+    const logMark = stageLog.length;
     console.log(`\n--- loop round ${rounds}/${chain.loop.max} (until ${cond}) ---`);
     for (const id of chain.loop.stages) {
       if (halted) break;
@@ -445,6 +529,23 @@ if (chain.loop && !halted) {
       if (conditionMet(ctx, cond)) break;
     }
     if (halted) break;
+    if (conditionMet(ctx, cond)) break;
+
+    const thisCond = JSON.stringify(readPath(ctx, condRoot) ?? null);
+    const touched = stageLog.slice(logMark).reduce((n, s) => n + (s.filesChanged?.length || 0), 0);
+    const stuck = noProgressHalt({
+      condRoot,
+      previous: lastCond,
+      current: thisCond,
+      filesTouched: touched,
+      round: rounds,
+    });
+    if (stuck) {
+      console.log(`   ⚠ ${stuck.reason}`);
+      halted = stuck;
+      break;
+    }
+    lastCond = thisCond;
   }
 }
 

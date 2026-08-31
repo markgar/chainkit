@@ -80,6 +80,17 @@ export function page() {
   .steps { padding: 4px 0; display: none; }
   .call.open .steps { display: block; }
   .step { display: flex; gap: 8px; padding: 2px 10px 2px 14px; align-items: baseline; }
+  /* Why the run stopped, stated once at the top rather than left in the JSON. */
+  .halt { margin: 8px 10px; padding: 8px 10px; border-left: 3px solid var(--bad, #cf222e);
+          background: var(--background-color-muted, #f6f8fa); border-radius: 4px; }
+  .haltkind { font-weight: 600; color: var(--bad, #cf222e); text-transform: uppercase;
+              letter-spacing: .04em; font-size: 11px; }
+  .haltwhere { font-size: 11px; opacity: .75; margin-left: 6px; }
+  .haltwhy { margin-top: 4px; font-size: 12px; line-height: 1.45; }
+  .warnbox { margin: 8px 10px; padding: 8px 10px; border-left: 3px solid var(--warn, #bf8700);
+             background: var(--background-color-muted, #f6f8fa); border-radius: 4px;
+             font-size: 12px; line-height: 1.45; }
+  .warnbox b { display: block; margin-bottom: 3px; color: var(--warn, #bf8700); }
   .step:hover { background: var(--background-color-muted, #f6f8fa); }
   .st { width: 12px; flex: none; text-align: center; }
   /* Concurrency. The CLI fires tool calls in parallel and a flat list hides it, so
@@ -392,6 +403,10 @@ function render(s) {
       bits.push(
         \`<span class="chan warn" title="this stage inherited another stage's whole conversation">↩ resumes \${esc(inherits === true ? "previous round" : inherits)}</span>\`,
       );
+    if (st.declaredToolsUnused)
+      bits.push(
+        \`<span class="chan warn" title="this stage was given tools and called none — its output was not checked against the repo">⚠ tools unused</span>\`,
+      );
     if (st.expects)
       bits.push(
         \`<span class="chan" title="declared key contract">⊨ \${esc(Object.keys(st.expects).join(", "))}</span>\`,
@@ -423,7 +438,25 @@ function render(s) {
     return \`<div class="ghead"><span class="gname">\${esc(name)}</span><span class="grule"></span></div>\`;
   }
 
-  el.body = run.stages.map((st) => groupHead(st) + \`
+  // WHY THE RUN STOPPED, at the top, in words.
+  //
+  // The record has always held this and the canvas has never shown it: a halted run
+  // rendered as a run that simply had fewer stages, so "is it dead, and why" was a
+  // question you could only answer by reading JSON on disk. Every halt kind is
+  // treated the same way here -- the kernel names the kind and writes the sentence,
+  // and this prints it, so a kind added later needs no change on this side.
+  const H = run.summary?.halted;
+  const W = Array.isArray(run.summary?.warnings) ? run.summary.warnings : [];
+  const banner = !H
+    ? ""
+    : \`<div class="halt"><span class="haltkind">\${esc(H.kind || "halted")}</span>
+       <span class="haltwhere">at <b>\${esc(H.stage || "?")}</b>\${H.round ? " round " + H.round : ""}\${H.iter ? " · element " + H.iter : ""}</span>
+       <div class="haltwhy">\${esc(H.reason || "no reason recorded")}</div></div>\`;
+  const warnBox = !W.length
+    ? ""
+    : \`<div class="warnbox"><b>\${W.length} warning\${W.length === 1 ? "" : "s"}</b>\${W.map((w) => \`<div>\${esc(w)}</div>\`).join("")}</div>\`;
+
+  el.body = banner + warnBox + run.stages.map((st) => groupHead(st) + \`
     <div class="stage \${st.status === "pending" || st.status === "skipped" || st.status === "unreached" ? "pending" : ""}">
       <div class="shead">
         <span class="sord">\${String(st.seq ?? st.ord).padStart(2, "0")}</span>
