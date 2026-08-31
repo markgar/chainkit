@@ -64,12 +64,19 @@ export function page() {
   .stage.s-running { background: rgba(127,127,127,.13);
                      border-color: var(--accent, #0969da); }
   /* Element boundary in a fan-out. The rows are element-major, so this is where
-     one chunk's work ends and the next begins. */
-  .ghead { display: flex; align-items: center; gap: 8px; margin: 18px 0 10px; }
-  .ghead:first-child { margin-top: 4px; }
-  .gname { font-size: 10px; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase;
-           color: var(--muted); white-space: nowrap; }
-  .grule { flex: 1; height: 1px; background: var(--border-color-default, #d0d7de); }
+     one chunk's work ends and the next begins. Sized as a real section header --
+     an element's stages run to thousands of lines, so this is the only thing on
+     screen telling you which one you are in, and it was set smaller than the tool
+     names inside it. Sticky for the same reason: scroll into a 50-step builder and
+     the answer to "which chunk is this" must not be 2,000px above. */
+  .ghead { display: flex; align-items: center; gap: 10px; margin: 26px 0 12px;
+           position: sticky; top: 0; z-index: 3; padding: 7px 0 8px;
+           background: var(--background-color-default, #fff); }
+  .ghead:first-child { margin-top: 2px; }
+  .gname { font-size: 15px; font-weight: 700; letter-spacing: 0.02em; text-transform: uppercase;
+           color: var(--text-color-default, #1f2328); white-space: nowrap; }
+  .grule { flex: 1; height: 2px; border-radius: 1px;
+           background: var(--border-color-default, #d0d7de); }
   .round { font-size: 10px; font-weight: 600; padding: 0 5px; border-radius: 4px;
            background: var(--background-color-muted, #f6f8fa); color: var(--muted);
            border: 1px solid var(--border-color-default, #d0d7de); }
