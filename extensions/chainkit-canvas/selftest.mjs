@@ -523,8 +523,8 @@ rmSync(root, { recursive: true, force: true });
       path.join(live, "_calls.jsonl"),
       [
         { seq: 1, id: "cmd", iter: 0, round: 0 },
-        { seq: 2, id: "think", iter: 0, round: 0 },
-        { seq: 3, id: "gate", iter: 0, round: 2 },
+        { seq: 2, id: "gate", iter: 0, round: 2 },
+        { seq: 3, id: "think", iter: 0, round: 0 },
       ]
         .map((e) => JSON.stringify(e))
         .join("\n") + "\n",
@@ -532,7 +532,18 @@ rmSync(root, { recursive: true, force: true });
     eq(
       "a command stage that ran inside a loop round is not 'not started'",
       readRun(live, r).stages.find((s) => s.id === "gate").status,
-      "running",
+      "ran",
+    );
+    // ...and it must sit where it RAN. A missed lookup does not merely mislabel the
+    // stage, it drops it to the fallback sort, which places it after everything the
+    // journal ordered -- so a plan-stage loop that gated the fan-out rendered BELOW
+    // the builder it had released. `gate` ran second here and declares third.
+    eq(
+      "a loop stage sorts by when it ran, not after everything the journal placed",
+      readRun(live, r)
+        .stages.map((s) => s.id)
+        .join(","),
+      "cmd,gate,think,later",
     );
     rmSync(live, { recursive: true, force: true });
   }

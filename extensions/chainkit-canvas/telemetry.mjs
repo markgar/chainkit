@@ -498,6 +498,34 @@ function parseStageDir(dirName) {
   };
 }
 
+// The journal, keyed loosely.
+//
+// A row that came from the DECLARED pipeline carries round 0, because the config
+// says nothing about which round a stage will run in. A stage that ran inside a
+// loop is journalled under the round it actually ran in. So an exact `id/iter/round`
+// lookup misses precisely the stages a loop exists to re-run -- and a miss is not
+// benign: it reads as "never ran", which puts the stage in the wrong place in the
+// timeline AND labels it "not started". Observed live: plan-recheck ran, passed,
+// released the fan-out, and still rendered as not-started BELOW the builder it had
+// gated. Match on id and element; keep first and last so ordering can ask where a
+// stage BEGAN and status can ask what it did MOST RECENTLY.
+function looseOrder(order) {
+  const m = new Map();
+  if (!order) return m;
+  for (const [key, seq] of order) {
+    const i = key.indexOf("/");
+    const j = key.indexOf("/", i + 1);
+    const k = key.slice(0, j === -1 ? undefined : j);
+    const cur = m.get(k);
+    if (!cur) m.set(k, { first: seq, last: seq });
+    else {
+      if (seq < cur.first) cur.first = seq;
+      if (seq > cur.last) cur.last = seq;
+    }
+  }
+  return m;
+}
+
 // True EXECUTION order.
 //
 // The driver writes `_calls.jsonl` as it goes, one line per call, so the order is
@@ -509,8 +537,13 @@ function parseStageDir(dirName) {
 // ahead of every loop round and appears to have run first. That is exactly why the
 // journal exists; inferring the order is a last resort, not the design.
 function runOrder(rows, order = null) {
+  const loose = looseOrder(order);
   const fallback = (r) => [r.sortIter ?? r.iter ?? 0, r.round ?? 0, r.ord ?? 0];
-  const keyed = (r) => (order ? order.get(`${r.id}/${r.iter || 0}/${r.round || 0}`) : undefined);
+  const keyed = (r) =>
+    order
+      ? (order.get(`${r.id}/${r.iter || 0}/${r.round || 0}`) ??
+        loose.get(`${r.id}/${r.iter || 0}`)?.first)
+      : undefined;
   return [...rows]
     .sort((a, b) => {
       const ka = keyed(a);
@@ -771,21 +804,10 @@ export function readRun(runDir, root) {
     // the run is visible before it happens, not a list that grows from nothing.
     let maxSeq = 0;
     for (const seq of order.values()) if (seq > maxSeq) maxSeq = seq;
-    // Match on id and element, NOT on round. A pending row comes from the declared
-    // pipeline, so its round is 0, while a stage that ran inside a loop is journalled
-    // under the round it ran in -- so an exact key lookup misses precisely the
-    // stages a loop exists to re-run. Observed immediately: `plan-recheck` ran as
-    // round 1, returned ok, released the fan-out, and still showed "not started"
-    // while the build was underway.
-    const bestSeq = new Map();
-    for (const [key, seq] of order) {
-      const [id, it] = key.split("/");
-      const k = `${id}/${it}`;
-      if (seq > (bestSeq.get(k) || 0)) bestSeq.set(k, seq);
-    }
+    const loose = looseOrder(order);
     for (const st of stages) {
       if (st.status !== "pending") continue;
-      const seq = bestSeq.get(`${st.id}/${st.iter || 0}`);
+      const seq = loose.get(`${st.id}/${st.iter || 0}`)?.last;
       if (!seq) continue;
       st.noModelCalls = true;
       st.status = seq < maxSeq ? "ran" : "running";
