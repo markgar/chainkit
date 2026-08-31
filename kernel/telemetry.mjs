@@ -36,6 +36,14 @@ export function parseCopilotJsonl(raw) {
   let result = null;
   let usageCheckpoint = null;
   let outputTokensTotal = 0;
+  // A response the model was CUT OFF from finishing. The provider says so
+  // explicitly (`finish_reason: "length"`), and throwing that away is how a
+  // truncated answer arrives downstream looking like a badly-behaved model:
+  // JSON extraction fails and the run halts on "no parseable JSON in output",
+  // which names the symptom and hides the cause. Observed for real -- a stage
+  // whose final message began mid-word, with a closing fence and no opening one.
+  let truncatedCalls = 0;
+  let maxOutputTokens = null;
 
   for (const e of events) {
     const t = e.type || "?";
@@ -48,6 +56,12 @@ export function parseCopilotJsonl(raw) {
     // checkpoint wins. Before this existed we regexed the human-readable
     // "AI Credits" line out of stdout, which is a display string, not data.
     if (t === "session.usage_checkpoint" && e.data) usageCheckpoint = e.data;
+
+    if (t === "model.model_call_success" && e.data) {
+      const reasons = e.data.responseChunk?.choices || [];
+      for (const c of reasons) if (c?.finish_reason === "length") truncatedCalls++;
+      if (typeof e.data.maxOutputTokens === "number") maxOutputTokens = e.data.maxOutputTokens;
+    }
 
     if (t === "assistant.message") {
       const d = e.data || {};
@@ -170,6 +184,8 @@ export function parseCopilotJsonl(raw) {
     turns: eventTypeCounts["assistant.turn_end"] || 0,
     messageCount: messages.length,
     outputTokensTotal,
+    truncatedCalls,
+    maxOutputTokens,
     toolCallCount: toolCalls.length,
     reads,
     toolCallsByName,
@@ -253,4 +269,39 @@ export function appendLive(logDir, label, chunk) {
   } catch {
     /* liveness is a convenience; never let it break a run */
   }
+}
+
+// This parser decides what every downstream reader sees, and until now it had no
+// suite: a field it silently stops capturing looks exactly like a field the run
+// never produced. The cases below are the ones with teeth -- a truncation signal
+// that must be seen, and the false-positive side (a normal stop is NOT a
+// truncation), which is the half that rots quietly.
+export function selfTest() {
+  const cases = [];
+  const line = (type, data) => JSON.stringify({ type, data });
+  const call = (reason, max = 32000) =>
+    line("model.model_call_success", {
+      maxOutputTokens: max,
+      responseChunk: { choices: [{ finish_reason: reason }] },
+    });
+
+  const cut = parseCopilotJsonl([call("tool_calls"), call("length"), call("stop")].join("\n"));
+  cases.push(["a cut-off response is counted", cut.truncatedCalls === 1]);
+  cases.push(["the output ceiling is captured", cut.maxOutputTokens === 32000]);
+
+  const clean = parseCopilotJsonl([call("tool_calls"), call("stop")].join("\n"));
+  cases.push(["a normal stop is not a truncation", clean.truncatedCalls === 0]);
+
+  // Every truncated call counts, not just the first: the real run that motivated
+  // this hit the ceiling twice, and "was it truncated" and "how badly" are
+  // different questions.
+  const twice = parseCopilotJsonl([call("length"), call("length")].join("\n"));
+  cases.push(["every cut-off call counts", twice.truncatedCalls === 2]);
+
+  // A provider that reports no finish_reason must read as "not truncated" rather
+  // than throwing -- an unknown is not evidence of a fault.
+  const quiet = parseCopilotJsonl(line("model.model_call_success", { responseUsage: {} }));
+  cases.push(["a missing finish_reason is not a truncation", quiet.truncatedCalls === 0]);
+
+  return cases;
 }

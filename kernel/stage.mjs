@@ -169,9 +169,21 @@ export async function runStage({
   if (stage.parse === "json") {
     const p = extractJson(r.text);
     if (!p.ok) {
+      // "No parseable JSON" is the symptom. When the provider told us it CUT THE
+      // RESPONSE OFF (`finish_reason: "length"`), that is the cause, and reporting
+      // only the symptom sends the reader to debug a prompt or a model's
+      // formatting when the real answer is "raise the ceiling or ask for less".
+      // Observed: a stage truncated at exactly its 32000-token limit twice, whose
+      // surviving text began mid-word and carried a closing fence with no opening.
+      const cut = r.telemetry?.truncatedCalls || 0;
+      const why = cut
+        ? `${p.error} — the model was cut off at the output limit${
+            r.telemetry?.maxOutputTokens ? ` (${r.telemetry.maxOutputTokens} tokens)` : ""
+          } on ${cut} call(s), so the text is a fragment. Ask for a smaller answer, or raise the limit.`
+        : p.error;
       return {
         ok: false,
-        error: `stage "${stage.id}": ${p.error}`,
+        error: `stage "${stage.id}": ${why}`,
         kind: "parse",
         raw: (r.text || "").slice(-2000),
         telemetry: r.telemetry,

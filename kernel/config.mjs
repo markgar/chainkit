@@ -359,6 +359,16 @@ export function warnChain(chain, { promptRoot, readPrompt = defaultReadPrompt } 
       // dead and earn a permanent warning on a correct chain -- which is how people
       // learn to ignore warnings.
       body = typeof s.run === "string" ? s.run : null;
+      // A run stage also names artifacts WITHOUT braces -- it is handed the
+      // artifact store as a file and told which entry to read, as in
+      // `plan-check.mjs buildPlan --strict`. Only `{{...}}` was counted, so a
+      // correct chain earned a permanent warning about a producer that is very
+      // much read, which is precisely how a warning becomes noise. Match on the
+      // word so a substring cannot claim a read it does not perform.
+      if (body)
+        for (const s2 of stages)
+          if (s2.produces && new RegExp(`\\b${s2.produces}\\b`).test(body))
+            referenced.add(s2.produces);
     } else {
       try {
         body = readPrompt(promptRoot, s.prompt);
@@ -553,6 +563,38 @@ export function selfTest() {
     if (!(rel in prompts)) throw new Error("missing");
     return prompts[rel];
   };
+  // A `run:` stage that names an artifact as a bare CLI argument is reading it.
+  // This is the correct-config-warned-at case: the check that cries wolf on a
+  // right chain is the one that teaches people to ignore every warning it emits.
+  const runReads = (cmd) =>
+    warnChain(
+      {
+        seeds: {},
+        defaults: { model: "m" },
+        stages: [
+          { id: "plan", prompt: "x.md", produces: "buildPlan" },
+          { id: "check", run: cmd },
+          { id: "last", prompt: "x.md" },
+        ],
+      },
+      { promptRoot: ".", readPrompt: () => "no placeholders" },
+    ).filter((w) => w.includes("buildPlan"));
+
+  CASES.push([
+    "a run stage reading an artifact by bare name is a reader",
+    runReads("node plan-check.mjs buildPlan --strict").length === 0,
+  ]);
+  CASES.push([
+    "a run stage that does NOT name it still warns",
+    runReads("node plan-check.mjs --strict").length === 1,
+  ]);
+  // Without a word boundary, `buildPlanner` would silently satisfy `buildPlan`
+  // and the dead artifact would go unreported -- the check failing open.
+  CASES.push([
+    "a longer word containing the name does not count as a read",
+    runReads("node plan-check.mjs buildPlanner").length === 1,
+  ]);
+
   const base = {
     seeds: { spec: "" },
     defaults: { model: "m" },
