@@ -720,13 +720,33 @@ export function readRun(runDir, root) {
   // Record JSON exists only after the run ends -- optional enrichment.
   const all = stages.flatMap((s) => s.rounds);
 
-  // A finished run has no pending stages. Once the record exists the run is over,
-  // so a declared stage that never started did not START -- it was SKIPPED, and
-  // that is now a normal outcome rather than a defect: `fix` legitimately never
-  // runs when every review passes. Leaving it as "pending" on a completed run says
-  // the opposite, that the view is still waiting for something.
+  // A finished run has no pending stages -- but "did not start" and "produced no
+  // model call" are DIFFERENT things, and conflating them made the panel confidently
+  // wrong. A `$ command` stage (preflight, plan-check, plan-recheck) never writes a
+  // model-call log, so it stayed "pending" forever and then got relabelled
+  // "skipped -- never needed" on a run where it had demonstrably run and returned a
+  // verdict the whole chain branched on.
+  //
+  // The run record settles it: stageLog holds exactly the stages that executed. One
+  // that is in there RAN, whatever it left in the log directory. One that is not
+  // did not -- and WHY it did not is the second distinction. On a halted run the
+  // remaining stages were never reached, which is not the same claim as "never
+  // needed"; the latter says the chain decided against them, and on build5 it was
+  // said about every stage that would have written the actual code.
   if (summary) {
-    for (const st of stages) if (st.status === "pending") st.status = "skipped";
+    const ran = new Set((summary.stageLog || []).map((s) => s.id));
+    const wall = new Map();
+    for (const s of summary.stageLog || []) wall.set(s.id, (wall.get(s.id) || 0) + (s.wallMs || 0));
+    for (const st of stages) {
+      if (st.status !== "pending") continue;
+      if (ran.has(st.id)) {
+        st.status = "ran";
+        st.noModelCalls = true;
+        st.wallMs = wall.get(st.id) || 0;
+      } else {
+        st.status = summary.halted ? "unreached" : "skipped";
+      }
+    }
   }
 
   // The log directory only ever knew about MODEL CALLS. The two other handoffs

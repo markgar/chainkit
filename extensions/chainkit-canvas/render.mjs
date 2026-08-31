@@ -383,7 +383,7 @@ function render(s) {
     // A stage that never ran has no channels to report. Its DECLARED resume/expects
     // would otherwise render as if the handoff had happened -- a skipped stage
     // claiming it inherited a conversation is a straight-up false statement.
-    if (st.status === "skipped") return "";
+    if (st.status === "skipped" || st.status === "unreached") return "";
     if (st.declared && st.declared.tools === false)
       bits.push('<span class="chan">reasons only</span>');
     if (st.declared?.inLoop) bits.push('<span class="chan">in loop</span>');
@@ -415,7 +415,7 @@ function render(s) {
     if (!hasElements) return "";
     // A declared stage that never started belongs to no element -- it was skipped
     // in ALL of them. Filing it under the last element would claim it ran there.
-    const unrun = st.status === "pending" || st.status === "skipped";
+    const unrun = st.status === "pending" || st.status === "skipped" || st.status === "unreached";
     const g = unrun ? "unrun" : st.iter || 0;
     if (g === lastGroup) return "";
     lastGroup = g;
@@ -424,7 +424,7 @@ function render(s) {
   }
 
   el.body = run.stages.map((st) => groupHead(st) + \`
-    <div class="stage \${st.status === "pending" || st.status === "skipped" ? "pending" : ""}">
+    <div class="stage \${st.status === "pending" || st.status === "skipped" || st.status === "unreached" ? "pending" : ""}">
       <div class="shead">
         <span class="sord">\${String(st.seq ?? st.ord).padStart(2, "0")}</span>
         <span class="swatch" style="background:\${idHue(st.id)}"></span>
@@ -435,8 +435,11 @@ function render(s) {
           st.outputCeiling ? " of " + st.outputCeiling.toLocaleString() + " tokens" : ""
         }, so the text below is a fragment">cut off\${st.truncated > 1 ? " \u00d7" + st.truncated : ""}</span>\` : ""}
         <span class="grow"></span>
-        <span class="detail">\${st.status === "pending" || st.status === "skipped"
-          ? (st.status === "skipped" ? "skipped \u2014 never needed" : "not started")
+        <span class="detail">\${
+          st.status === "pending" ? "not started"
+          : st.status === "skipped" ? "skipped \u2014 never needed"
+          : st.status === "unreached" ? "never reached \u2014 the run halted first"
+          : st.noModelCalls ? "ran \u2014 no model call" + (st.wallMs ? " \u00b7 " + (st.wallMs >= 1000 ? (st.wallMs / 1000).toFixed(1) + "s" : st.wallMs + "ms") : "")
           : \`\${st.rounds.length > 1 ? st.rounds.length + " calls · " : ""}\${st.tools} tools · \${st.aiu.toFixed(2)} AiU\${st.unmetered ? " +?" : ""}\`}</span>
       </div>
       \${channels(st)}

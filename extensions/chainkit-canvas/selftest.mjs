@@ -391,6 +391,75 @@ rmSync(root, { recursive: true, force: true });
   rmSync(feRoot, { recursive: true, force: true });
 }
 
+// "DID NOT PRODUCE A MODEL CALL" IS NOT "DID NOT RUN". A `$ command` stage writes no
+// model-call log at all, so it stayed pending and was then relabelled "skipped --
+// never needed" on a run where it had executed and returned the verdict the chain
+// branched on. And on a HALTED run the stages after the halt were reported the same
+// way, which says the chain decided against them rather than never got to them.
+{
+  const r = mkdtempSync(path.join(tmpdir(), "ck-status-"));
+  const id = "c__t__2026-01-01T00-00-00";
+  const dir = path.join(r, "results", "chain-runs", "logs", id);
+  mkdirSync(path.join(dir, "01-cmd"), { recursive: true });
+  mkdirSync(path.join(dir, "02-think"), { recursive: true });
+  // Only the model stage leaves a call log; the command stage leaves nothing.
+  writeFileSync(
+    path.join(dir, "02-think", "think.jsonl"),
+    JSON.stringify({
+      type: "assistant.message",
+      timestamp: "2026-01-01T00:00:01.000Z",
+      data: { content: "done", model: "m" },
+    }) + "\n",
+  );
+  writeFileSync(
+    path.join(dir, "_chain.json"),
+    JSON.stringify({ stages: [{ id: "cmd" }, { id: "think" }, { id: "later" }] }),
+  );
+  mkdirSync(path.join(r, "results", "chain-runs"), { recursive: true });
+
+  const write = (extra) =>
+    writeFileSync(
+      path.join(r, "results", "chain-runs", `${id}.json`),
+      JSON.stringify({
+        delivered: false,
+        stageLog: [
+          { id: "cmd", wallMs: 46 },
+          { id: "think", wallMs: 900 },
+        ],
+        ...extra,
+      }),
+    );
+
+  write({ halted: { stage: "loop", kind: "exhausted", reason: "budget" } });
+  const halted = readRun(dir, r);
+  eq(
+    "a command stage that ran is not called skipped",
+    halted.stages.find((s) => s.id === "cmd").status,
+    "ran",
+  );
+  eq(
+    "and it says why it has no calls to show",
+    halted.stages.find((s) => s.id === "cmd").noModelCalls,
+    true,
+  );
+  eq("its wall time comes from the record", halted.stages.find((s) => s.id === "cmd").wallMs, 46);
+  eq(
+    "a stage after a halt was never reached, not never needed",
+    halted.stages.find((s) => s.id === "later").status,
+    "unreached",
+  );
+
+  write({});
+  const clean = readRun(dir, r);
+  eq(
+    "on a run that finished, an unrun stage really was skipped",
+    clean.stages.find((s) => s.id === "later").status,
+    "skipped",
+  );
+
+  rmSync(r, { recursive: true, force: true });
+}
+
 // THE CALL JOURNAL. Order used to be INFERRED from (element, round, declared
 // index). That is right for every shape seen so far and wrong the moment a
 // non-loop stage sits AFTER a loop: its round is 0, so it sorts ahead of every
