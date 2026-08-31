@@ -14,7 +14,7 @@
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { readRun, listRuns, describeTool } from "./telemetry.mjs";
+import { readRun, listRuns, describeTool, annotateConcurrency } from "./telemetry.mjs";
 import { page } from "./render.mjs";
 import vm from "node:vm";
 
@@ -763,6 +763,52 @@ rmSync(root, { recursive: true, force: true });
     "opts",
   );
   eq("genuinely empty args stay empty", describeTool("some_future_tool", {}), "");
+}
+
+// Concurrency detection. The CLI runs tool calls in parallel and the flat step list
+// hid it entirely; these prove overlap is read off the timestamps and NOT inferred
+// from adjacency, which is the tempting shortcut that would call every fast pair
+// parallel.
+{
+  const tool = (at, endAt) => ({ kind: "tool", name: "t", at, endAt });
+  const t = (s) => `2026-01-01T00:00:${String(s).padStart(2, "0")}.000Z`;
+
+  {
+    const steps = [tool(t(0), t(5)), tool(t(1), t(4))];
+    eq("two overlapping calls report peak 2", annotateConcurrency(steps), 2);
+    eq("both are marked with the group size", [steps[0].par, steps[1].par], [2, 2]);
+    eq(
+      "only the first row carries the badge",
+      [steps[0].parFirst, steps[1].parFirst],
+      [true, false],
+    );
+  }
+
+  {
+    const steps = [tool(t(0), t(1)), tool(t(2), t(3))];
+    eq("calls that merely follow each other are not parallel", annotateConcurrency(steps), 1);
+    eq("and are not grouped", [steps[0].par, steps[1].par], [1, 1]);
+  }
+
+  {
+    // A of 0-9 overlaps B of 5-6 and C of 8-12: one transitive group of 3, but only
+    // 2 were ever open at once. Group size and peak are different questions.
+    const steps = [tool(t(0), t(9)), tool(t(5), t(6)), tool(t(8), t(12))];
+    eq("a transitive group does not inflate the peak", annotateConcurrency(steps), 2);
+    eq("but the group still holds all three", steps[2].par, 3);
+  }
+
+  {
+    // A call with no complete event ends at the last event seen, not at "now" --
+    // otherwise the number moves every poll and a live run reads as more parallel
+    // the longer you look at it.
+    const steps = [tool(t(0), null), tool(t(1), t(2))];
+    eq("an unfinished call is bounded by the last event", annotateConcurrency(steps, t(3)), 2);
+    eq("with no last event it cannot claim overlap", annotateConcurrency([tool(t(0), null)]), 1);
+  }
+
+  eq("say steps are ignored", annotateConcurrency([{ kind: "say", text: "hi" }]), 0);
+  eq("no steps is zero, not one", annotateConcurrency([]), 0);
 }
 
 if (fails.length) {

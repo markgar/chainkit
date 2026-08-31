@@ -163,7 +163,68 @@ function parseJsonl(file) {
   return out;
 }
 
-// One agent invocation -> a timeline. The accounting here is UNCHANGED from the
+// The CLI dispatches tool calls in parallel, and that is invisible in a flat list
+// of steps -- 38 calls read as 38 sequential ones. It is fully recoverable though:
+// every start and every complete carries a timestamp, so two calls whose intervals
+// intersect provably ran at the same time. This annotates each tool step with the
+// overlapping GROUP it belongs to, and returns the peak concurrency.
+//
+// WHY A STILL-RUNNING CALL ENDS AT THE LAST EVENT, not at "now". A call with no
+// complete event has an unknown end, and inventing one is how this panel has been
+// wrong before. What the stream actually proves is that the call was still open as
+// of the last event on disk, so that is the end used -- evidence, not a guess. It
+// also keeps the number stable: re-reading the same file twice cannot change it.
+//
+// Grouping is transitive (A overlaps B, B overlaps C => one group), which is the
+// honest reading of "these ran concurrently" without asserting the model dispatched
+// them as one batch. Peak is a separate sweep, because a group of 8 does not mean 8
+// were ever open at once.
+export function annotateConcurrency(steps, lastAt = null) {
+  const tools = steps.filter((s) => s.kind === "tool" && s.at);
+  const end = (s) => Date.parse(s.endAt || lastAt || s.at);
+  const iv = tools
+    .map((s) => ({ s, a: Date.parse(s.at), b: end(s) }))
+    .filter((v) => Number.isFinite(v.a) && Number.isFinite(v.b))
+    .sort((x, y) => x.a - y.a);
+
+  let group = null;
+  let gid = 0;
+  const groups = [];
+  for (const v of iv) {
+    if (group && v.a < group.end) {
+      group.items.push(v);
+      group.end = Math.max(group.end, v.b);
+    } else {
+      group = { id: gid++, items: [v], end: v.b };
+      groups.push(group);
+    }
+  }
+  for (const g of groups)
+    for (const [i, v] of g.items.entries()) {
+      v.s.par = g.items.length;
+      v.s.parGroup = g.id;
+      v.s.parFirst = i === 0;
+    }
+
+  const ev = iv.flatMap((v) => [
+    [v.a, 1],
+    [v.b, -1],
+  ]);
+  ev.sort((x, y) => x[0] - y[0] || x[1] - y[1]);
+  let cur = 0;
+  // Starts at 1 whenever there is anything at all. The sweep closes before it opens
+  // at an equal timestamp -- deliberate, so two calls that merely touch end-to-start
+  // are not called parallel -- but that makes a ZERO-LENGTH interval (an unfinished
+  // call with no later event to bound it) sweep to 0, i.e. "no call ever ran". One
+  // call ran. Caught by a self-test, not by looking at it.
+  let peak = iv.length ? 1 : 0;
+  for (const [, d] of ev) {
+    cur += d;
+    if (cur > peak) peak = cur;
+  }
+  return peak;
+}
+
 // version this project paid dearly to get right; the only edit is that a call no
 // longer carries a `kind`, because there are no kinds.
 function readCall(file, label) {
@@ -202,6 +263,7 @@ function readCall(file, label) {
           name: d.toolName,
           detail: describeTool(d.toolName, d.arguments),
           at: ev.timestamp,
+          endAt: null,
           status: "running",
         });
         if (d.model) model = d.model;
@@ -210,6 +272,7 @@ function readCall(file, label) {
         const i = pending.get(d.toolCallId);
         if (i != null && steps[i]) {
           steps[i].status = d.success === false ? "failed" : "ok";
+          steps[i].endAt = ev.timestamp;
           pending.delete(d.toolCallId);
         }
         break;
@@ -282,10 +345,13 @@ function readCall(file, label) {
     /* file vanished between readdir and stat */
   }
 
+  const peakParallel = annotateConcurrency(steps, events.at(-1)?.timestamp || null);
+
   return {
     label,
     model,
     steps,
+    peakParallel,
     outputTokens,
     truncated,
     outputCeiling,

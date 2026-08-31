@@ -82,6 +82,11 @@ export function page() {
   .step { display: flex; gap: 8px; padding: 2px 10px 2px 14px; align-items: baseline; }
   .step:hover { background: var(--background-color-muted, #f6f8fa); }
   .st { width: 12px; flex: none; text-align: center; }
+  /* Concurrency. The CLI fires tool calls in parallel and a flat list hides it, so
+     rows that provably overlapped in time share a left rule and the first carries
+     the group size. Fixed-width even when empty, so the status column never shifts. */
+  .par { width: 22px; flex: none; text-align: right; font-size: 11px; color: var(--accent, #0969da); }
+  .step.pgrp { border-left: 2px solid var(--accent, #0969da); padding-left: 12px; }
   .st.ok { color: var(--ok); } .st.failed { color: var(--bad); } .st.running { color: var(--warn); }
   /* min-width, NOT width: this was a fixed 58px column, and every tool name
      longer than that (repo_read, ts_outline, ts_symbol) overflowed its box and
@@ -443,7 +448,7 @@ function render(s) {
         const toolw = Math.max(10, ...p.steps.filter(x => x.kind !== "say").map(x => (x.name || "").length + 1));
         const steps = p.steps.map(x => x.kind === "say"
           ? \`<div class="say\${st.truncated ? " cut-body" : ""}">\${sayHtml(sayText(x.text))}</div>\`
-          : \`<div class="step"><span class="st \${x.status}">\${x.status === "ok" ? "✓" : x.status === "failed" ? "✗" : x.status === "running" ? "◐" : "·"}</span><span class="tool">\${esc(x.name)}</span><span class="detail mono">\${esc(x.detail)}</span></div>\`
+          : \`<div class="step\${x.par > 1 ? " pgrp" : ""}"><span class="par">\${x.par > 1 && x.parFirst ? "\\u2225" + x.par : ""}</span><span class="st \${x.status}">\${x.status === "ok" ? "✓" : x.status === "failed" ? "✗" : x.status === "running" ? "◐" : "·"}</span><span class="tool">\${esc(x.name)}</span><span class="detail mono">\${esc(x.detail)}</span></div>\`
         ).join("") || (out ? "" : '<div class="step"><span class="detail">no tool calls recorded</span></div>');
         return \`<div class="call \${isOpen ? "open" : ""}" data-key="\${esc(key)}">
           <div class="chead">
@@ -452,7 +457,7 @@ function render(s) {
               ? \`<span class="tag" title="\${esc(p.label)}">\${p.round ? "round " + p.round : "call"}</span>\`
               : ""}
             \${flight}
-            <span class="detail">\${p.steps.length} step\${p.steps.length === 1 ? "" : "s"}\${out ? " · output" : ""}</span>
+            <span class="detail">\${p.steps.length} step\${p.steps.length === 1 ? "" : "s"}\${out ? " · output" : ""}\${p.peakParallel > 1 ? " · up to " + p.peakParallel + " at once" : ""}</span>
             <span class="grow"></span>
             \${st.rounds.length > 1
               ? \`<span class="detail">\${p.toolCount} tools · \${p.aiu == null ? "AiU not reported yet" : p.aiu.toFixed(2) + " AiU"}</span>\`
