@@ -102,12 +102,10 @@ function runCase(name, checkBody, max = 3) {
 function runGateRepairCase() {
   const root = mkdtempSync(path.join(tmpdir(), "chainkit-gate-repair-"));
   const work = path.join(root, "work");
-  const replay = path.join(root, "replay");
   const results = path.join(root, "results");
   const marker = path.join(root, "gate-seen");
   const bin = path.join(root, "bin");
   mkdirSync(work);
-  mkdirSync(replay);
   mkdirSync(bin);
   writeFileSync(path.join(work, "base.txt"), "base\n");
   spawnSync("git", ["init", "-q"], { cwd: work });
