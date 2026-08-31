@@ -499,6 +499,26 @@ rmSync(root, { recursive: true, force: true });
   }
   eq("the page's inline script parses", syntaxError, null);
   eq("the page renders the non-model channels", html.includes("chans"), true);
+
+  // Parsing is not behaviour. `sayText` is written inside a template literal, so
+  // its regexes pass through one round of escape processing before a browser
+  // ever sees them -- a level I got wrong first try, which parsed cleanly at the
+  // .mjs level and produced a regex containing a real newline in the page. Run
+  // the EMITTED function, not the source.
+  // Only this declaration -- the surrounding script talks to `document`, which
+  // does not exist here and is not what is under test.
+  const src = scripts[0];
+  const from = src.indexOf("const sayText =");
+  const decl = src.slice(from, src.indexOf("\n};", from) + 3);
+  const ctx = { out: null };
+  vm.createContext(ctx);
+  new vm.Script(decl + "\nout = sayText;").runInContext(ctx);
+  const sayText = ctx.out;
+  eq("an escaped-newline payload is unescaped for display", sayText("a\\nb\\nc"), "a\nb\nc");
+  eq("ordinary multi-line prose is left alone", sayText("a\nb"), "a\nb");
+  // The guard that keeps it from mangling real content: text with one mention of
+  // an escape but many real newlines is prose, not a JSON payload.
+  eq("prose that merely mentions an escape is untouched", sayText("a\nb\nc\\nd"), "a\nb\nc\\nd");
 }
 
 // A tool call with no label is the same row repeated N times. The property that

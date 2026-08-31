@@ -170,6 +170,12 @@ function readCall(file, label) {
   const events = parseJsonl(file);
   const steps = [];
   let outputTokens = 0;
+  // The provider says outright when it CUT a response off. Without this the
+  // canvas renders the surviving fragment as though it were the answer -- the
+  // motivating case began mid-word and carried a closing fence with no opening
+  // one, and nothing on screen suggested anything was wrong.
+  let truncated = 0;
+  let outputCeiling = null;
   // null, NOT 0. A call that has not yet emitted a usage checkpoint -- every
   // live call, and any model whose stream does not meter -- would otherwise
   // report a confident `0`, which reads as "this was free" rather than "not
@@ -203,6 +209,11 @@ function readCall(file, label) {
         }
         break;
       }
+      case "model.model_call_success":
+        for (const c of d.responseChunk?.choices || [])
+          if (c?.finish_reason === "length") truncated++;
+        if (typeof d.maxOutputTokens === "number") outputCeiling = d.maxOutputTokens;
+        break;
       case "assistant.message":
         if (d.model) model = d.model;
         if (typeof d.outputTokens === "number") outputTokens += d.outputTokens;
@@ -239,6 +250,8 @@ function readCall(file, label) {
     model,
     steps,
     outputTokens,
+    truncated,
+    outputCeiling,
     aiu: nanoAiu == null ? null : nanoAiu / 1e9,
     metered: nanoAiu != null,
     done,
@@ -509,6 +522,8 @@ export function readRun(runDir, root) {
         // being tested, not a fact the reader should encode.
         aiu: rounds.reduce((n, r2) => n + (r2.aiu ?? 0), 0),
         outputTokens: rounds.reduce((n, r2) => n + r2.outputTokens, 0),
+        truncated: rounds.reduce((n, r2) => n + (r2.truncated || 0), 0),
+        outputCeiling: rounds.find((r2) => r2.outputCeiling)?.outputCeiling ?? null,
         tools: rounds.reduce((n, r2) => n + r2.toolCount, 0),
         unmetered: rounds.filter((r2) => !r2.metered).length,
         // Prefer the model the run DECLARED. A stage that has not produced an
@@ -545,6 +560,8 @@ export function readRun(runDir, root) {
       rounds: [],
       aiu: 0,
       outputTokens: 0,
+      truncated: 0,
+      outputCeiling: null,
       tools: 0,
       unmetered: 0,
       model: p.model || "",

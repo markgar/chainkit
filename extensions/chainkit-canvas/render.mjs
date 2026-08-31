@@ -103,6 +103,16 @@ export function page() {
   .say { margin: 6px 10px 8px 14px; padding: 7px 9px; border-radius: 6px; white-space: pre-wrap;
          background: var(--background-color-muted, #f6f8fa);
          border-left: 3px solid var(--true-color-blue-muted, #54aeff); overflow-wrap: anywhere; }
+  /* A response the provider CUT OFF. Rendering the surviving fragment as if it
+     were the answer is the failure this badge exists to prevent: the text reads
+     as a normal reply while being, literally, the tail of one. */
+  .cut { font-size: 10px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+         color: #ffd479; background: #3a2a00; border: 1px solid #7a5a00;
+         border-radius: 4px; padding: 1px 5px; margin-left: 6px; }
+  .say.cut-body { border-left-color: #7a5a00; }
+  /* A long final message used to render as one unbounded wall, pushing the rest
+     of the run off screen. Cap it and let it scroll in place. */
+  .say { max-height: 260px; overflow: auto; }
   .empty { color: var(--muted); padding: 24px 0; }
   .warn { background: #3a2a00; border: 1px solid #7a5a00; color: #ffd479; padding: 8px 10px;
           border-radius: 6px; margin-bottom: 10px; font-size: 12px; line-height: 1.45; }
@@ -131,6 +141,19 @@ export function page() {
 
 <script>
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+// A model that answers with JSON writes newlines ESCAPED. Normally the text is
+// parsed and the escapes vanish; when it cannot be parsed -- a cut-off fragment,
+// most of all -- the raw string reaches the screen and every line break shows as
+// a literal backslash-n, which is the least readable form of the one thing you
+// most want to read. Only rewrite when the escapes clearly outnumber real
+// newlines, so ordinary prose that happens to mention a newline escape is
+// left alone.
+const sayText = (t) => {
+  const str = String(t ?? "");
+  const escaped = (str.match(/\\\\n/g) || []).length;
+  const real = (str.match(/\\n/g) || []).length;
+  return escaped > real ? str.replace(/\\\\n/g, "\\n") : str;
+};
 // One call open at a time. A null openKey means "follow the newest call", which is
 // what makes a live run watchable without clicking; any manual click pins that call.
 let openKey = null;
@@ -290,6 +313,9 @@ function render(s) {
         <span class="sid">\${esc(hasElements ? st.id : st.label || st.id)}</span>
         \${st.round ? \`<span class="round" title="loop round">r\${st.round}</span>\` : ""}
         <span class="detail mono">\${esc(st.model || "")}</span>
+        \${st.truncated ? \`<span class="cut" title="the provider stopped this response at the output ceiling\${
+          st.outputCeiling ? " of " + st.outputCeiling.toLocaleString() + " tokens" : ""
+        }, so the text below is a fragment">cut off\${st.truncated > 1 ? " \u00d7" + st.truncated : ""}</span>\` : ""}
         <span class="grow"></span>
         <span class="detail">\${st.status === "pending" || st.status === "skipped"
           ? (st.status === "skipped" ? "skipped \u2014 never needed" : "not started")
@@ -303,7 +329,7 @@ function render(s) {
         const out = outputHtml(p.output);
         const toolw = Math.max(10, ...p.steps.filter(x => x.kind !== "say").map(x => (x.name || "").length + 1));
         const steps = p.steps.map(x => x.kind === "say"
-          ? \`<div class="say">\${esc(x.text)}</div>\`
+          ? \`<div class="say\${st.truncated ? " cut-body" : ""}">\${esc(sayText(x.text))}</div>\`
           : \`<div class="step"><span class="st \${x.status}">\${x.status === "ok" ? "✓" : x.status === "failed" ? "✗" : x.status === "running" ? "◐" : "·"}</span><span class="tool">\${esc(x.name)}</span><span class="detail mono">\${esc(x.detail)}</span></div>\`
         ).join("") || (out ? "" : '<div class="step"><span class="detail">no tool calls recorded</span></div>');
         return \`<div class="call \${isOpen ? "open" : ""}" data-key="\${esc(key)}">
