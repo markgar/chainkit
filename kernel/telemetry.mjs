@@ -13,6 +13,8 @@
 import { mkdirSync, writeFileSync, appendFileSync, rmSync } from "node:fs";
 import path from "node:path";
 
+const sumCounts = (m) => Object.values(m).reduce((a, b) => a + b, 0);
+
 export function parseCopilotJsonl(raw) {
   const events = [];
   for (const ln of String(raw || "").split("\n")) {
@@ -30,6 +32,8 @@ export function parseCopilotJsonl(raw) {
   const toolCalls = [];
   const reads = [];
   const toolCallsByName = {};
+  const toolEventCounts = {};
+  const startCountsByName = {};
   const models = new Set();
   const errors = [];
   const finalParts = [];
@@ -98,14 +102,23 @@ export function parseCopilotJsonl(raw) {
       if (d.phase === "final_answer" && d.content) finalParts.push(d.content);
     }
 
-    // Any tool.* lifecycle event (execution_start/complete/...) — count by name
-    // so we still see tool activity even if a CLI version doesn't echo it back
-    // on the assistant.message.
+    // Any tool.* lifecycle event (execution_start/complete/...) — counted so we
+    // still see tool activity even if a CLI version doesn't echo it back on the
+    // assistant.message.
+    //
+    // These are kept SEPARATE from toolCallsByName. They used to share it under
+    // `${type}:${name}` keys, which made one map hold two different countings of
+    // the same events: `repo_read: 22` beside `tool.execution_start:repo_read: 22`
+    // (the same 22 calls) and `tool.execution_complete:tool.execution_complete: 29`
+    // (a completion event carries no tool name, so the fallback used the event
+    // type). A consumer summing that map double-counts, and one printing it shows
+    // rows that are not tools. A map named "by name" must hold names.
     if (t.startsWith("tool.")) {
       const d = e.data || {};
       const name = d.name || d.toolName || d.tool || t;
-      const key = `${t}:${name}`;
-      toolCallsByName[key] = (toolCallsByName[key] || 0) + 1;
+      toolEventCounts[t] = (toolEventCounts[t] || 0) + 1;
+      if (t === "tool.execution_start")
+        startCountsByName[name] = (startCountsByName[name] || 0) + 1;
 
       // Record what the builder ACTUALLY ingested, not what it was asked to.
       // Measured hazard: told to read a 2,828-line file "in full", flash ran
@@ -201,9 +214,13 @@ export function parseCopilotJsonl(raw) {
     truncatedCalls,
     maxOutputTokens,
     callTexts,
-    toolCallCount: toolCalls.length,
+    toolCallCount: toolCalls.length || sumCounts(startCountsByName),
     reads,
-    toolCallsByName,
+    // The assistant's own toolRequests are the primary source; execution_start
+    // events are the fallback for a CLI version that does not echo them back.
+    // Never both -- they are the same calls counted twice.
+    toolCallsByName: Object.keys(toolCallsByName).length ? toolCallsByName : startCountsByName,
+    toolEventCounts,
     models: [...models],
     errors,
     messages,
@@ -312,6 +329,51 @@ export function selfTest() {
   // different questions.
   const twice = parseCopilotJsonl([call("length"), call("length")].join("\n"));
   cases.push(["every cut-off call counts", twice.truncatedCalls === 2]);
+
+  // Tool counting. Shapes taken from a real run: the assistant echoes its own
+  // toolRequests, and the SAME calls also appear as tool.execution_start /
+  // tool.execution_complete events -- the completion carrying no tool name.
+  const toolRun = parseCopilotJsonl(
+    [
+      line("assistant.message", {
+        turnId: "t1",
+        toolRequests: [{ name: "repo_read" }, { name: "repo_read" }, { name: "grep" }],
+      }),
+      line("tool.execution_start", { toolName: "repo_read" }),
+      line("tool.execution_start", { toolName: "repo_read" }),
+      line("tool.execution_start", { toolName: "grep" }),
+      line("tool.execution_complete", { toolName: null }),
+    ].join("\n"),
+  );
+  cases.push([
+    "tools are counted by name, once",
+    JSON.stringify(toolRun.toolCallsByName) === JSON.stringify({ repo_read: 2, grep: 1 }),
+  ]);
+  cases.push([
+    "no event-type keys leak into the by-name map",
+    !Object.keys(toolRun.toolCallsByName).some((k) => k.startsWith("tool.")),
+  ]);
+  cases.push([
+    "lifecycle events are counted separately",
+    toolRun.toolEventCounts["tool.execution_start"] === 3 &&
+      toolRun.toolEventCounts["tool.execution_complete"] === 1,
+  ]);
+  cases.push(["the by-name counts are not doubled", toolRun.toolCallCount === 3]);
+
+  // The fallback: a CLI that does not echo toolRequests still yields real names,
+  // which is the whole reason the lifecycle events are read at all.
+  const startsOnly = parseCopilotJsonl(
+    [
+      line("tool.execution_start", { toolName: "glob" }),
+      line("tool.execution_start", { toolName: "glob" }),
+      line("tool.execution_complete", { toolName: null }),
+    ].join("\n"),
+  );
+  cases.push([
+    "execution_start is the fallback when nothing was echoed",
+    JSON.stringify(startsOnly.toolCallsByName) === JSON.stringify({ glob: 2 }) &&
+      startsOnly.toolCallCount === 2,
+  ]);
 
   // A provider that reports no finish_reason must read as "not truncated" rather
   // than throwing -- an unknown is not evidence of a fault.
