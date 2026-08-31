@@ -176,6 +176,11 @@ function readCall(file, label) {
   // one, and nothing on screen suggested anything was wrong.
   let truncated = 0;
   let outputCeiling = null;
+  // Every model call's text, in order. A turn cut off at the output ceiling
+  // emits no `assistant.message`, so showing only those shows only the final
+  // fragment of a long answer -- which is why this panel opened a reply
+  // mid-word, at "undred ms", with no sign that anything preceded it.
+  const callTexts = [];
   // null, NOT 0. A call that has not yet emitted a usage checkpoint -- every
   // live call, and any model whose stream does not meter -- would otherwise
   // report a confident `0`, which reads as "this was free" rather than "not
@@ -213,6 +218,14 @@ function readCall(file, label) {
         for (const c of d.responseChunk?.choices || [])
           if (c?.finish_reason === "length") truncated++;
         if (typeof d.maxOutputTokens === "number") outputCeiling = d.maxOutputTokens;
+        {
+          const partial = d.responseChunk?.choices?.[0]?.delta?.content;
+          if (partial)
+            callTexts.push({
+              text: String(partial),
+              cut: d.responseChunk?.choices?.[0]?.finish_reason === "length",
+            });
+        }
         break;
       case "assistant.message":
         if (d.model) model = d.model;
@@ -231,6 +244,30 @@ function readCall(file, label) {
       default:
         break;
     }
+  }
+
+  // When calls were cut off, the last assistant message is only the tail of the
+  // answer -- so show the whole sequence instead, with each cut marked. Joining
+  // silently would be worse than the fragment: a cut-off call is sometimes an
+  // attempt the model ABANDONED and restarted, so a seam is not always a
+  // continuation and the panel must not claim it is. Marking, not merging.
+  if (truncated > 0 && callTexts.length > 1) {
+    const CAP = 6000;
+    const body = callTexts
+      .map((c) => {
+        const t =
+          c.text.length > CAP
+            ? c.text.slice(0, CAP) + `\n… ${c.text.length - CAP} more characters`
+            : c.text;
+        return c.cut ? `${t}\n──── cut off here at the output ceiling ────` : t;
+      })
+      .join("\n");
+    for (let i = steps.length - 1; i >= 0; i--)
+      if (steps[i].kind === "say") {
+        steps[i].text = body;
+        break;
+      }
+    text = body;
   }
 
   // Anything still "running" when the stream ended is really unknown, not running.
@@ -252,6 +289,7 @@ function readCall(file, label) {
     outputTokens,
     truncated,
     outputCeiling,
+    callTexts,
     aiu: nanoAiu == null ? null : nanoAiu / 1e9,
     metered: nanoAiu != null,
     done,

@@ -500,6 +500,66 @@ rmSync(root, { recursive: true, force: true });
   eq("the page's inline script parses", syntaxError, null);
   eq("the page renders the non-model channels", html.includes("chans"), true);
 
+  // A CUT-OFF stage must show the WHOLE answer, not its tail. The motivating
+  // panel opened mid-word at "undred ms" because only the last assistant
+  // message survived; the earlier calls existed but were never read.
+  const cutRoot = mkdtempSync(path.join(tmpdir(), "ck-canvas-cut-"));
+  const cutDir = path.join(cutRoot, "results", "chain-runs", "logs", runId);
+  const call = (content, reason) => ({
+    type: "model.model_call_success",
+    data: {
+      maxOutputTokens: 32000,
+      responseChunk: { choices: [{ finish_reason: reason, delta: { content } }] },
+    },
+  });
+  mkdirSync(path.join(cutDir, "01-x"), { recursive: true });
+  writeFileSync(
+    path.join(cutDir, "01-x", "x.jsonl"),
+    [
+      call("BEGINNING of the answer", "length"),
+      call("the TAIL of it", "stop"),
+      // Only the final, non-truncated turn produces an assistant message --
+      // which is exactly the shape that lost the earlier text.
+      { type: "assistant.message", data: { model: "m", content: "the TAIL of it" } },
+      { type: "result", data: {} },
+    ]
+      .map((l) => JSON.stringify(l))
+      .join("\n"),
+  );
+  const cutStage = readRun(cutDir, cutRoot).stages[0];
+  const cutSay = cutStage.rounds
+    .flatMap((p) => p.steps)
+    .filter((x) => x.kind === "say")
+    .pop();
+  eq("a cut-off stage is counted as truncated", cutStage.truncated, 1);
+  eq("the panel shows the beginning, not just the tail", cutSay.text.startsWith("BEGINNING"), true);
+  eq("the panel still shows the tail", cutSay.text.includes("the TAIL of it"), true);
+  // Marked, never silently merged: a cut-off call is sometimes an attempt the
+  // model abandoned, so the seam must not be presented as a continuation.
+  eq("the cut is marked at the seam", cutSay.text.includes("cut off here"), true);
+  // The no-regression half, in its OWN fixture: the shared one above is removed
+  // long before this point, and reading a deleted directory would have made this
+  // pass for the wrong reason.
+  mkdirSync(path.join(cutDir, "02-y"), { recursive: true });
+  writeFileSync(
+    path.join(cutDir, "02-y", "y.jsonl"),
+    [
+      call("a whole answer, uninterrupted", "stop"),
+      { type: "assistant.message", data: { model: "m", content: "a whole answer, uninterrupted" } },
+      { type: "result", data: {} },
+    ]
+      .map((l) => JSON.stringify(l))
+      .join("\n"),
+  );
+  const plain = readRun(cutDir, cutRoot).stages.find((x) => x.id === "y");
+  const plainSay = plain.rounds
+    .flatMap((p) => p.steps)
+    .filter((x) => x.kind === "say")
+    .pop();
+  eq("an untruncated stage is not counted as truncated", plain.truncated, 0);
+  eq("an untruncated stage is untouched", plainSay.text, "a whole answer, uninterrupted");
+  rmSync(cutRoot, { recursive: true, force: true });
+
   // Parsing is not behaviour. `sayText` is written inside a template literal, so
   // its regexes pass through one round of escape processing before a browser
   // ever sees them -- a level I got wrong first try, which parsed cleanly at the
