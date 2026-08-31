@@ -110,6 +110,11 @@ export function page() {
            border: 1px solid var(--border-color-default, #d0d7de); }
   .shead { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 5px; }
   .sord { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 11px; }
+  .criterion { display: flex; align-items: baseline; gap: 7px; margin: 1px 0 7px;
+               color: var(--muted); font-size: 11px; line-height: 1.45; }
+  .criterion b { flex: none; color: var(--text-color-default, #1f2328); font-weight: 600; }
+  .criterion code { overflow-wrap: anywhere; }
+  .criterion .bound { flex: none; white-space: nowrap; }
   .call { border: 1px solid var(--border-color-default, #d0d7de); border-radius: 8px;
           margin-bottom: 6px; overflow: hidden; }
   .chead { width: 100%; display: flex; align-items: center; gap: 8px; padding: 7px 10px;
@@ -513,6 +518,17 @@ function render(s) {
     return bits.length ? \`<div class="chans">\${bits.join("")}</div>\` : "";
   }
 
+  function exitCriterion(st) {
+    const completion = st.declared?.completion;
+    if (!completion) return "";
+    const attempts = Number(completion.max) || 1;
+    return \`<div class="criterion">
+      <b>Exit criterion</b>
+      <code>\${esc(completion.run)}</code>
+      <span class="bound">up to \${attempts} attempt\${attempts === 1 ? "" : "s"}</span>
+    </div>\`;
+  }
+
   // GROUP HEADERS. With a fan-out the rows are element-major -- everything for
   // element 1, then element 2 -- and a flat list of 12 rows hides that structure.
   // A header is emitted whenever the element changes, so the block boundaries are
@@ -574,6 +590,7 @@ function render(s) {
             }\`}</span>
       </div>
       \${channels(st)}
+      \${exitCriterion(st)}
       \${st.rounds.map((p) => {
         const key = (st.key || st.id) + "/" + p.label;
         const isOpen = key === activeKey;
