@@ -904,6 +904,15 @@ export function readRun(runDir, root) {
     summary,
     artifactHistory,
     plan,
+    // WHAT THE FAN-OUT ITERATES, in the chain's own word.
+    //
+    // The canvas has no opinion about the process, so it cannot call these things
+    // "chunks" -- another chain fans out over files, or orgs, or test cases. But
+    // calling them "elements" is not neutral, it is just a worse name: the chain
+    // already declares one, in `foreach.as`, and that binding is exactly what the
+    // prompts read as {{chunk.id}}. Repeat the chain's word; fall back to the
+    // generic one only when a chain did not say.
+    unit: (plan?.foreach?.as || "").trim() || "element",
     // Prefer the REAL signal: a .live.jsonl exists only while its call's process
     // is running, so an in-flight call is proof the run is alive. The mtime
     // window is the fallback for the gaps between calls (gate, install, diff),

@@ -448,7 +448,7 @@ function render(s) {
     const g = unrun ? "unrun" : st.iter || 0;
     if (g === lastGroup) return "";
     lastGroup = g;
-    const name = g === "unrun" ? "not run" : g ? "element " + g : "chain";
+    const name = g === "unrun" ? "not run" : g ? (run.unit || "element") + " " + g : "chain";
     return \`<div class="ghead"><span class="gname">\${esc(name)}</span><span class="grule"></span></div>\`;
   }
 
@@ -464,7 +464,7 @@ function render(s) {
   const banner = !H
     ? ""
     : \`<div class="halt"><span class="haltkind">\${esc(H.kind || "halted")}</span>
-       <span class="haltwhere">at <b>\${esc(H.stage || "?")}</b>\${H.round ? " round " + H.round : ""}\${H.iter ? " · element " + H.iter : ""}</span>
+       <span class="haltwhere">at <b>\${esc(H.stage || "?")}</b>\${H.round ? " round " + H.round : ""}\${H.iter ? " · " + (run.unit || "element") + " " + H.iter : ""}</span>
        <div class="haltwhy">\${esc(H.reason || "no reason recorded")}</div></div>\`;
   const warnBox = !W.length
     ? ""

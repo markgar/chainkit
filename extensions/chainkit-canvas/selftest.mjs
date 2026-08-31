@@ -581,6 +581,22 @@ rmSync(root, { recursive: true, force: true });
     eq("a fan-out command stage gets a row per element it ran in", facts.length, 1);
     eq("that row is attributed to the element, not element 0", facts[0].iter, 1);
     eq("and it is not reported as never started", facts[0].status, "ran");
+    // The fan-out's unit is named BY THE CHAIN. "element" is not neutral, it is
+    // just a worse name than the one the config already declares in foreach.as --
+    // the same binding the prompts read as {{chunk.id}}. The canvas repeats it
+    // without ever learning what the thing is.
+    eq("a chain's own word for its fan-out unit is carried through", f.unit, "element");
+    writeFileSync(
+      path.join(fan, "_chain.json"),
+      JSON.stringify({
+        stages: [
+          { id: "code", inForeach: true },
+          { id: "facts", inForeach: true },
+        ],
+        foreach: { over: "plan.chunks", as: "chunk" },
+      }),
+    );
+    eq("a declared binding name replaces the generic one", readRun(fan, r).unit, "chunk");
     rmSync(fan, { recursive: true, force: true });
   }
 
