@@ -29,10 +29,19 @@ import { render, readPath } from "./context.mjs";
 // Pull a JSON object out of a model's prose. Models reliably wrap JSON in fences or
 // preface it with a sentence, and treating that as a parse failure would throw away
 // a good answer over formatting.
+//
+// Every candidate span is tried and the LONGEST one that parses wins. Preferring a
+// fenced candidate outright is what broke: a plan's own string values quoted code in
+// ``` fences, so the fence regex matched a pair INSIDE the JSON, and a 503-char scrap
+// of TypeScript yielded a parseable `[]`. A whole, correct 59KB plan was thrown away
+// for an empty array -- valid JSON, so nothing failed; only the stage's `expects`
+// contract caught it. Longest-span selection keeps the fence as the recovery it was
+// meant to be (prose containing braces) without letting a fragment outrank the whole.
 function extractJson(text) {
   if (!text) return { ok: false, error: "empty output" };
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
   const candidates = [fenced?.[1], text].filter(Boolean);
+  let best = null;
   for (const c of candidates) {
     const trimmed = c.trim();
     // Take the outermost brace/bracket span, so trailing commentary is ignored.
@@ -42,15 +51,17 @@ function extractJson(text) {
     ]) {
       const i = trimmed.indexOf(open);
       const j = trimmed.lastIndexOf(close);
-      if (i >= 0 && j > i) {
-        try {
-          return { ok: true, value: JSON.parse(trimmed.slice(i, j + 1)) };
-        } catch {
-          /* try the next candidate */
-        }
+      if (i < 0 || j <= i) continue;
+      const span = trimmed.slice(i, j + 1);
+      if (best && span.length <= best.length) continue;
+      try {
+        best = { length: span.length, value: JSON.parse(span) };
+      } catch {
+        /* try the next span */
       }
     }
   }
+  if (best) return { ok: true, value: best.value };
   return { ok: false, error: "no parseable JSON in output" };
 }
 
@@ -432,6 +443,22 @@ export function selfTest() {
   CASES.push(["a JSON array parses", extractJson("[1,2,3]").value.length === 3]);
   CASES.push(["prose with no JSON fails", extractJson("no json here").ok === false]);
   CASES.push(["empty output fails", extractJson("").ok === false]);
+
+  // The defect this guards: a plan whose own string values quote code in ``` fences.
+  // The fence regex matches a pair INSIDE the JSON, and that fragment can yield a
+  // parseable-but-wrong value. Preferring the fenced candidate returned `[]` here
+  // and threw away the whole object.
+  const fenceInString = JSON.stringify({
+    chunks: [{ id: "c1", acceptance: "add:\n```ts\nconst a = [];\n```\nthen build" }],
+  });
+  CASES.push([
+    "a fence inside a JSON string does not outrank the whole object",
+    extractJson(fenceInString).value?.chunks?.[0]?.id === "c1",
+  ]);
+  CASES.push([
+    "prose containing braces still falls back to the fenced block",
+    extractJson('I tried {a} first:\n```json\n{"a":9}\n```').value.a === 9,
+  ]);
 
   // Reassembling a cut-off answer. The shapes here are taken from the real run
   // that motivated it: an abandoned prose attempt, then the answer itself split
