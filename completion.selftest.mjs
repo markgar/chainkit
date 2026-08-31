@@ -1,6 +1,14 @@
 #!/usr/bin/env node
 
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -94,19 +102,34 @@ function runCase(name, checkBody, max = 3) {
 function runGateRepairCase() {
   const root = mkdtempSync(path.join(tmpdir(), "chainkit-gate-repair-"));
   const work = path.join(root, "work");
-  const replay = path.join(root, "replay");
   const results = path.join(root, "results");
   const marker = path.join(root, "gate-seen");
+  const bin = path.join(root, "bin");
   mkdirSync(work);
-  mkdirSync(replay);
+  mkdirSync(bin);
   writeFileSync(path.join(work, "base.txt"), "base\n");
   spawnSync("git", ["init", "-q"], { cwd: work });
+  spawnSync("git", ["config", "user.name", "test"], { cwd: work });
+  spawnSync("git", ["config", "user.email", "test@example.com"], { cwd: work });
   spawnSync("git", ["add", "base.txt"], { cwd: work });
-  spawnSync(
-    "git",
-    ["-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-qm", "base"],
-    { cwd: work },
+  spawnSync("git", ["commit", "-qm", "base"], { cwd: work });
+  writeFileSync(
+    path.join(bin, "copilot"),
+    [
+      "#!/usr/bin/env node",
+      "import { writeFileSync } from 'node:fs';",
+      "writeFileSync('base.txt', 'fixed\\n');",
+      `console.log(${JSON.stringify(
+        JSON.stringify({
+          type: "assistant.message",
+          data: { model: "gpt-5.6-sol", outputTokens: 3, content: "done" },
+        }),
+      )});`,
+      `console.log(${JSON.stringify(JSON.stringify({ type: "result", data: {} }))});`,
+      "",
+    ].join("\n"),
   );
+  chmodSync(path.join(bin, "copilot"), 0o755);
   writeFileSync(path.join(root, "fix.md"), "Repair the deterministic failure.\n");
   writeFileSync(
     path.join(root, "gate.mjs"),
@@ -130,7 +153,7 @@ function runGateRepairCase() {
       "stages:",
       "  - id: integration-fix",
       "    prompt: fix.md",
-      "    tools: false",
+      "    tools: true",
       "    resume: true",
       "gate:",
       `  run: node ${path.join(root, "gate.mjs")}`,
@@ -140,7 +163,6 @@ function runGateRepairCase() {
       "",
     ].join("\n"),
   );
-  writeFileSync(path.join(replay, "integration-fix.r1.jsonl"), replayLine());
   spawnSync(
     process.execPath,
     [
@@ -154,11 +176,19 @@ function runGateRepairCase() {
       "--tag",
       "test",
     ],
-    { env: { ...process.env, FLASH_CHAIN_REPLAY: replay }, encoding: "utf8" },
+    {
+      env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}` },
+      encoding: "utf8",
+    },
   );
   const records = readdirSync(path.join(results, "chain-runs")).filter((f) => f.endsWith(".json"));
   const record = JSON.parse(readFileSync(path.join(results, "chain-runs", records[0]), "utf8"));
-  return { root, record };
+  return {
+    root,
+    record,
+    status: spawnSync("git", ["status", "--porcelain"], { cwd: work, encoding: "utf8" }).stdout,
+    content: readFileSync(path.join(work, "base.txt"), "utf8"),
+  };
 }
 
 const retryMarker = path.join(tmpdir(), `chainkit-completion-retry-${process.pid}`);
@@ -260,6 +290,9 @@ rmSync(commits.root, { recursive: true, force: true });
 const gateRepair = runGateRepairCase();
 eq("a failed final gate invokes its configured repair stage", gateRepair.record.stageLog.length, 1);
 eq("the exact final gate is retried to green", gateRepair.record.gate.ok, true);
+eq("a successful final gate repair is committed", gateRepair.record.gate.repairCommit.attempt, 1);
+eq("the committed final repair leaves a clean tree", gateRepair.status, "");
+eq("the committed final repair preserves the fix", gateRepair.content, "fixed\n");
 rmSync(gateRepair.root, { recursive: true, force: true });
 
 const preflightRoot = mkdtempSync(path.join(tmpdir(), "chainkit-preflight-"));

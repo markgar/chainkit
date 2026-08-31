@@ -891,7 +891,28 @@ if (gateSpec && !halted) {
 
     const repositoryChanged = stageLog.slice(mark).some((row) => row.repositoryChanged);
     gate = runFinalGate(attempt);
-    if (gate.ok) break;
+    if (gate.ok) {
+      const pending = sh("git status --porcelain=v1 --untracked-files=all", workDir).out.trim();
+      if (pending) {
+        sh("git add -A", workDir);
+        const c = sh(`git commit -q -m "chainkit: final gate repair ${attempt}"`, workDir);
+        if (c.code !== 0) {
+          halted = {
+            stage: "gate.repair",
+            round: attempt,
+            kind: "commit",
+            reason: `final gate passed, but its repair could not be committed: ${c.out.trim() || `git commit exited ${c.code}`}`,
+            gate,
+          };
+          break;
+        }
+        gate.repairCommit = {
+          attempt,
+          sha: sh("git rev-parse HEAD", workDir).out.trim(),
+        };
+      }
+      break;
+    }
 
     const current = `${gate.code}\n${gate.tail}`;
     if (current === previous && !repositoryChanged) {
