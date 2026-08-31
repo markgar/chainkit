@@ -616,6 +616,60 @@ rmSync(root, { recursive: true, force: true });
     "2 * 3 and <strong>real</strong> bold",
   );
 
+  // The container renderer, also EXECUTED. It calls sayHtml on leaves, so the
+  // context needs both.
+  const ok = (label, got) => eq(label, got, true);
+  const jFrom = src.indexOf("const jsonHtml =");
+  const jDecl = src.slice(jFrom, src.indexOf("\n};", jFrom) + 3);
+  const jCtx = { out: null, esc: hCtx.esc, sayHtml };
+  vm.createContext(jCtx);
+  new vm.Script(jDecl + "\nout = jsonHtml;").runInContext(jCtx);
+  const jsonHtml = jCtx.out;
+  ok(
+    "an array of strings is laid out as items, not as bracketed json",
+    (() => {
+      const h = jsonHtml(["first", "second"], 0);
+      return (
+        h.includes("jitem") &&
+        h.includes("first") &&
+        h.includes("second") &&
+        !h.includes("[") &&
+        !h.includes('"first"')
+      );
+    })(),
+  );
+  ok(
+    "an object becomes labelled rows",
+    (() => {
+      const h = jsonHtml({ id: "c1", files: ["a.ts"] }, 0);
+      return h.includes("jkey") && h.includes("id") && h.includes("c1") && h.includes("a.ts");
+    })(),
+  );
+  // The unification: a leaf string is prose, and reads as prose wherever it sits.
+  ok(
+    "markdown inside a leaf string is rendered",
+    jsonHtml(["see " + String.fromCharCode(96) + "api.ts" + String.fromCharCode(96)], 0).includes(
+      "<code>api.ts</code>",
+    ),
+  );
+  ok(
+    "a leaf string cannot inject html",
+    jsonHtml(["<script>x</script>"], 0).includes("&lt;script&gt;"),
+  );
+  eq(
+    "an empty array says so rather than rendering nothing",
+    jsonHtml([], 0),
+    '<span class="jnull">empty</span>',
+  );
+  ok(
+    "runaway nesting falls back to serialised json rather than recursing forever",
+    (() => {
+      let deep = "leaf";
+      for (let i = 0; i < 12; i++) deep = { next: deep };
+      return jsonHtml(deep, 0).includes("<pre>");
+    })(),
+  );
+
   // The repaint guard, EXECUTED. A parse check would not have caught what it
   // shipped first: the setter body was rewritten to assign through itself, an
   // infinite recursion that is perfectly valid syntax.

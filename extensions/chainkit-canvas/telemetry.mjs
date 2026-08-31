@@ -388,11 +388,13 @@ function structuredOutput(finalText) {
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
   // Flattened to rows the view can render without knowing the schema. Scalars
-  // print inline; anything nested is re-serialised so it is at least readable.
+  // print inline; a nested value is passed through INTACT so the view can lay it
+  // out as structure. It used to be re-serialised here and truncated at 4000
+  // chars, which made every non-scalar a wall of quoted JSON and silently cut the
+  // long string values -- a plan's blueprints -- that are the reason to look.
   return Object.entries(parsed).map(([k, v]) => ({
     key: k,
-    value:
-      v === null || typeof v !== "object" ? String(v) : JSON.stringify(v, null, 1).slice(0, 4000),
+    value: v === null || typeof v !== "object" ? String(v) : v,
     scalar: v === null || typeof v !== "object",
   }));
 }

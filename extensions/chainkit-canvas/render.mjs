@@ -130,10 +130,27 @@ export function page() {
   .orow + .orow { border-top: 1px solid var(--border-color-muted, #eaeef2); }
   .okey { color: var(--muted); font-size: 12px; overflow-wrap: anywhere;
           font-family: var(--font-mono, monospace); }
-  .oval { font-size: 12px; overflow-wrap: anywhere; }
+  .oval { font-size: 12px; overflow-wrap: anywhere; max-height: 340px; overflow: auto; }
   .oval pre { margin: 0; padding: 6px 8px; border-radius: 6px; font-size: 11px; white-space: pre-wrap;
               overflow-wrap: anywhere; max-height: 260px; overflow: auto;
               background: var(--background-color-muted, #f6f8fa); }
+  /* Structured output, laid out as structure. ONE scroll region per row -- capping
+     each nested level instead would nest scrollbars inside scrollbars. */
+  .jitem { display: flex; gap: 8px; padding: 3px 0; }
+  .jitem + .jitem { border-top: 1px solid var(--border-color-muted, #eaeef2); }
+  .jidx { flex: 0 0 auto; min-width: 16px; text-align: right; color: var(--muted);
+          font-size: 10px; font-family: var(--font-mono, monospace); padding-top: 2px; }
+  .jbody { flex: 1 1 auto; min-width: 0; }
+  .jrow { display: grid; grid-template-columns: 110px 1fr; gap: 8px; padding: 2px 0; align-items: baseline; }
+  .jkey { color: var(--muted); font-size: 11px; font-family: var(--font-mono, monospace);
+          overflow-wrap: anywhere; }
+  .jval { min-width: 0; overflow-wrap: anywhere; }
+  .jstr { white-space: pre-wrap; }
+  .jnum { font-family: var(--font-mono, monospace); }
+  .jnull { color: var(--muted); font-style: italic; }
+  .jbool { font-family: var(--font-mono, monospace); font-weight: 600; }
+  .jbool.yes { color: var(--true-color-green, #3fb950); }
+  .jbool.no { color: var(--true-color-red, #f85149); }
 </style>
 </head>
 <body>
@@ -192,6 +209,64 @@ const sayHtml = (t) =>
     .replace(/^(#{1,6})\\s+(.*)$/gm, (_m, _h, s) => '<b class="mdh">' + s + "</b>")
     .replace(/\\*\\*([^*\\n]+)\\*\\*/g, "<strong>$1</strong>")
     .replace(/\\x60([^\\x60\\n]+)\\x60/g, "<code>$1</code>");
+// Render a stage's structured output as STRUCTURE rather than a wall of JSON.
+// The view still does not interpret keys -- it lays out objects, arrays and
+// scalars and nothing else -- so it stays correct for any chain. What it removes
+// is the punctuation a reader has to look past: a verdict's findings were shown
+// as a bracketed list of quoted strings, which is the exact content you most need
+// to read and the hardest form to read it in.
+//
+// Depth is capped. A pathologically nested value falls back to serialised JSON,
+// because an unbounded recursion in the renderer would take the whole panel down
+// and the panel is the instrument.
+const jsonHtml = (v, depth) => {
+  const d = depth || 0;
+  if (v === null || v === undefined) return '<span class="jnull">none</span>';
+  if (d > 6) return "<pre>" + esc(JSON.stringify(v, null, 1)) + "</pre>";
+  if (Array.isArray(v)) {
+    if (!v.length) return '<span class="jnull">empty</span>';
+    return (
+      '<div class="jarr">' +
+      v
+        .map(
+          (el, i) =>
+            '<div class="jitem"><span class="jidx">' +
+            (i + 1) +
+            '</span><div class="jbody">' +
+            jsonHtml(el, d + 1) +
+            "</div></div>",
+        )
+        .join("") +
+      "</div>"
+    );
+  }
+  if (typeof v === "object") {
+    const keys = Object.keys(v);
+    if (!keys.length) return '<span class="jnull">empty</span>';
+    return (
+      '<div class="jobj">' +
+      keys
+        .map(
+          (k) =>
+            '<div class="jrow"><span class="jkey">' +
+            esc(k) +
+            '</span><div class="jval">' +
+            jsonHtml(v[k], d + 1) +
+            "</div></div>",
+        )
+        .join("") +
+      "</div>"
+    );
+  }
+  if (typeof v === "boolean")
+    return '<span class="jbool ' + (v ? "yes" : "no") + '">' + v + "</span>";
+  if (typeof v === "number") return '<span class="jnum">' + v + "</span>";
+  // A leaf string is PROSE -- a finding, a blueprint, a reason -- written in the
+  // same markdown as a stage's message. Escaping it here would leave literal
+  // backticks and asterisks inside an otherwise structured layout, which is the
+  // same defect one level down. One renderer, both surfaces.
+  return '<span class="jstr">' + sayHtml(v) + "</span>";
+};
 // One call open at a time. A null openKey means "follow the newest call", which is
 // what makes a live run watchable without clicking; any manual click pins that call.
 let openKey = null;
@@ -290,7 +365,7 @@ function render(s) {
     if (!rows || !rows.length) return "";
     return \`<div class="out">\${rows.map(r =>
       \`<div class="orow"><div class="okey">\${esc(r.key)}</div><div class="oval">\${
-        r.scalar ? esc(r.value) : \`<pre>\${esc(r.value)}</pre>\`
+        r.scalar ? sayHtml(r.value) : jsonHtml(r.value, 0)
       }</div></div>\`).join("")}</div>\`;
   }
 
