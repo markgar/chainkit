@@ -165,6 +165,9 @@ export async function readDesign(root, file) {
 
   const produced = new Set(seeds.map((s) => s.name));
   const loopIds = new Set(chain.loop?.stages || []);
+  const gateRepairIds = new Set(
+    typeof chain.gate === "object" ? chain.gate.repair?.stages || [] : [],
+  );
 
   const view = stages.map((s) => {
     const promptFile = path.resolve(promptRoot, s.prompt);
@@ -189,6 +192,7 @@ export async function readDesign(root, file) {
       // so the break is visible AT the stage that breaks.
       unresolved: uses.filter((u) => !produced.has(u)),
       inLoop: loopIds.has(s.id),
+      inGateRepair: gateRepairIds.has(s.id),
     };
     if (s.produces) produced.add(s.produces);
     return row;
@@ -207,7 +211,8 @@ export async function readDesign(root, file) {
     loop: chain.loop
       ? { stages: chain.loop.stages || [], until: chain.loop.until, max: chain.loop.max }
       : null,
-    gate: chain.gate || null,
+    gate: typeof chain.gate === "string" ? { run: chain.gate, repair: null } : chain.gate || null,
+    preflight: chain.preflight || null,
     defaults: chain.defaults || {},
     errors,
   };

@@ -482,12 +482,15 @@ function callFiles(stageDir) {
     out.push({
       file: n,
       label,
-      round: Number(label.match(/\.r(\d+)$/)?.[1] || 0),
+      round: Number(label.match(/\.r(\d+)(?:\.a\d+)?$/)?.[1] || 0),
+      attempt: Number(label.match(/\.a(\d+)$/)?.[1] || 1) - 1,
       live,
       sessionId,
     });
   }
-  return out.sort((a, b) => a.round - b.round || a.label.localeCompare(b.label));
+  return out.sort(
+    (a, b) => a.round - b.round || a.attempt - b.attempt || a.label.localeCompare(b.label),
+  );
 }
 
 // COST IS CUMULATIVE PER SESSION, SO A CALL'S OWN COST IS A DIFFERENCE.
@@ -663,7 +666,9 @@ function looseOrder(order) {
 // True EXECUTION order.
 //
 // The driver writes `_calls.jsonl` as it goes, one line per call, so the order is
-// READ rather than inferred. `order` maps "id/iter/round" to that sequence number.
+// READ rather than inferred. `order` maps "id/iter/round/attempt" to that sequence
+// number. Attempts matter because a completion failure may resume a stage inside
+// the same loop round.
 //
 // The fallback matters for runs recorded before the journal existed: element, then
 // round, then declared index. It is right for every chain shape seen so far and
@@ -672,10 +677,10 @@ function looseOrder(order) {
 // journal exists; inferring the order is a last resort, not the design.
 function runOrder(rows, order = null) {
   const loose = looseOrder(order);
-  const fallback = (r) => [r.sortIter ?? r.iter ?? 0, r.round ?? 0, r.ord ?? 0];
+  const fallback = (r) => [r.sortIter ?? r.iter ?? 0, r.round ?? 0, r.attempt ?? 0, r.ord ?? 0];
   const keyed = (r) =>
     order
-      ? (order.get(`${r.id}/${r.iter || 0}/${r.round || 0}`) ??
+      ? (order.get(`${r.id}/${r.iter || 0}/${r.round || 0}/${r.attempt || 0}`) ??
         loose.get(`${r.id}/${r.iter || 0}`)?.first)
       : undefined;
   return [...rows]
@@ -689,7 +694,7 @@ function runOrder(rows, order = null) {
       if (kb !== undefined) return 1;
       const fa = fallback(a);
       const fb = fallback(b);
-      return fa[0] - fb[0] || fa[1] - fb[1] || fa[2] - fb[2];
+      return fa[0] - fb[0] || fa[1] - fb[1] || fa[2] - fb[2] || fa[3] - fb[3];
     })
     .map((s, i) => ({ ...s, seq: i + 1 }));
 }
@@ -708,7 +713,7 @@ function readCallOrder(runDir) {
     if (!line.trim()) continue;
     try {
       const e = JSON.parse(line);
-      order.set(`${e.id}/${e.iter || 0}/${e.round || 0}`, e.seq);
+      order.set(`${e.id}/${e.iter || 0}/${e.round || 0}/${e.attempt || 0}`, e.seq);
     } catch {
       /* a half-written final line; the rest still orders */
     }
@@ -756,6 +761,7 @@ export function readRun(runDir, root) {
         call.steps = dropEchoedSay(call.steps, call.finalText);
       }
       call.round = c.round;
+      call.attempt = c.attempt;
       call.sessionId = c.sessionId;
       // Reading a .live.jsonl means this call's process has not exited yet, which
       // is a REAL in-flight signal rather than an mtime guess.
@@ -785,11 +791,14 @@ export function readRun(runDir, root) {
     // the run record, because the record is only written when a run ENDS -- reading
     // it there meant a live run could never show the handoff at all.
     const openedAt = new Map();
-    for (const c of [...calls].sort((a, b) => (a.round || 0) - (b.round || 0)))
-      if (c.sessionId && !openedAt.has(c.sessionId)) openedAt.set(c.sessionId, c.round || 0);
+    for (const c of [...calls].sort(
+      (a, b) => (a.round || 0) - (b.round || 0) || (a.attempt || 0) - (b.attempt || 0),
+    ))
+      if (c.sessionId && !openedAt.has(c.sessionId))
+        openedAt.set(c.sessionId, (c.round || 0) * 1000 + (c.attempt || 0));
     for (const [round, rounds] of [...byRound.entries()].sort((a, b) => a[0] - b[0])) {
       const resumedHere = rounds.some(
-        (c) => c.sessionId && openedAt.get(c.sessionId) < (c.round || 0),
+        (c) => c.sessionId && openedAt.get(c.sessionId) < (c.round || 0) * 1000 + (c.attempt || 0),
       );
       stages.push({
         id,
@@ -905,7 +914,7 @@ export function readRun(runDir, root) {
   if (!order && Array.isArray(summary?.stageLog)) {
     order = new Map();
     summary.stageLog.forEach((e, i) => {
-      order.set(`${e.id}/${e.iter || 0}/${e.round || 0}`, i + 1);
+      order.set(`${e.id}/${e.iter || 0}/${e.round || 0}/${e.attempt || 0}`, i + 1);
     });
   }
   const ordered = runOrder(stages, order);
@@ -923,6 +932,8 @@ export function readRun(runDir, root) {
       produces: p.produces,
       parse: p.parse,
       inLoop: p.inLoop,
+      inGateRepair: p.inGateRepair,
+      completion: p.completion || null,
     };
     if (p.expects) st.expects = p.expects;
   }
@@ -998,8 +1009,8 @@ export function readRun(runDir, root) {
     for (const e of summary.stageLog) {
       if (!e.sessionId) continue;
       const k = sessionKey(e);
-      const r = e.round || 0;
-      if (!sessionOpenedAt.has(k) || r < sessionOpenedAt.get(k)) sessionOpenedAt.set(k, r);
+      const pos = (e.round || 0) * 1000 + (e.attempt || 0);
+      if (!sessionOpenedAt.has(k) || pos < sessionOpenedAt.get(k)) sessionOpenedAt.set(k, pos);
     }
     for (const st of stages) {
       // Match on iteration AND round. A fan-out stage shares its id across every
@@ -1026,7 +1037,9 @@ export function readRun(runDir, root) {
       // stage and element.
       const declaredResume = entries.find((e) => e.resume)?.resume || null;
       const inherited = entries.some(
-        (e) => e.sessionId && sessionOpenedAt.get(sessionKey(e)) < (e.round || 0),
+        (e) =>
+          e.sessionId &&
+          sessionOpenedAt.get(sessionKey(e)) < (e.round || 0) * 1000 + (e.attempt || 0),
       );
       // Only ever UPGRADES the observed fact with the record's richer label (which
       // conversation was inherited). It must not downgrade to null: the call-derived
@@ -1034,6 +1047,7 @@ export function readRun(runDir, root) {
       if (inherited) st.resume = declaredResume || true;
       st.sessionIds = [...new Set(entries.map((e) => e.sessionId).filter(Boolean))];
       st.expects = entries.find((e) => e.expects)?.expects || null;
+      st.completion = entries.map((e) => e.completion).filter(Boolean);
       // A stage that was handed tools and used none verified nothing, and its output
       // is otherwise indistinguishable from a checked one. The run record carries the
       // fact; without this the canvas would show a normal green stage.

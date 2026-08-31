@@ -37,6 +37,21 @@ loop:
 
 A `run` stage takes no `model`, `effort`, `tools` or `resume`, and the config is **rejected** if it carries one rather than ignoring it: `run: pnpm format` alongside `model: claude-opus-5` is an author who believes a model is involved, and a run record showing a model that never ran is unreadable next to one that did. For the same reason chain `defaults.model` is not folded into it.
 
+When a command exists only to decide whether a model stage has finished its own work, it is **not a stage**. Attach it as that stage's bounded completion rule:
+
+```yaml
+- id: code
+  prompt: prompts/code.md
+  model: gpt-5.6-sol
+  tools: true
+  resume: true
+  completion:
+    run: pnpm test && pnpm check
+    max: 3
+```
+
+Chainkit appends this requirement to the stage's initial prompt, then runs the command independently after every turn. A failure is captured and sent back to the same stage; with `resume: true`, the same CLI conversation continues with the exact error. The stage cannot finish until the command passes. It halts on the declared bound, on a repeated failure with no file change, or if the supposedly read-only completion command changes the repository, index, or HEAD.
+
 **A command READS artifacts from a file, not from `{{...}}`.** Interpolation is right for a scalar (`pnpm test {{chunk.id}}`) and wrong for a structured artifact: `render` serialises an object as pretty-printed multi-line JSON, which is exactly what a prompt wants and is unsafe inside `bash -c` — a value containing an apostrophe, a backtick or a `$` is not rejected, it is silently mangled or executed. So every run stage is handed the whole store as a file instead:
 
 | env var              | is                                                            |
@@ -56,11 +71,30 @@ The file is written into the stage's own log directory on every path, including 
 
 It is also the honest way to declare a deterministic **write**. A model stage with `tools: false` halts the run if the tree moves, because the config claimed it only reasons; a `run` stage is exempt, since writing is its job and its command is stated in the config in full — "what may this change" is answered by reading it, not by trusting a flag.
 
-Control flow is exactly two things: stages run in order, and one bounded `loop` repeats a subset until a named artifact field is true.
+Control flow is explicit and bounded: stages run in order; `loop` repeats a subset until an artifact field is true; stage completion retries the responsible agent until a command passes; and a repairable final gate retries configured integration stages against the same deterministic command.
 
 **Declared position decides when a linear stage runs.** A stage that is neither a loop nor a fan-out member runs in the slot its position in `stages` puts it — before the blocks, between them, or after. This is what makes a post-fan-out step (normalise the tree, collect a report, commit the result) expressible, and it is why the gate never has to mutate anything itself.
 
 **A loop that never reaches its condition halts the run.** `until` is the chain's own statement of when the loop's output is fit to use, so exhausting `max` without reaching it is a failed precondition, not a lap counter running out — and continuing spends everything downstream (typically a fan-out, at many times the loop's cost) on an artifact the chain's own reviewer rejected. Set `onExhausted: continue` for the case where continuing is right: a loop whose reviewer is **advisory** because something objective follows it, as in [03-bounded-loop](examples/03-bounded-loop/), where the gate rather than the reviewer decides. An unsatisfied loop is recorded as unsatisfied either way, and blocks `delivered` either way. The key is rejected on a `foreach`'s inner loop, where that element's gate already runs next and stopping early would discard it.
+
+Repository-specific refusals belong in `preflight`, where they run after Chainkit's own git/base checks and before any model spend:
+
+```yaml
+preflight:
+  run: test -z "$(git status --porcelain)"
+```
+
+The final gate remains a string for simple chains. A chain that can repair integration failures may name ordinary stages to run before retrying the exact same command:
+
+```yaml
+gate:
+  run: pnpm check
+  repair:
+    stages: [integration-fix]
+    max: 2
+```
+
+Chainkit appends the failed command and its bounded output to each repair stage automatically. The chain author does not declare a synthetic feedback artifact; artifacts remain domain data passed between stages. The command, never the model, decides whether the run is clean.
 
 ## Layout
 
