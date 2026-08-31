@@ -208,8 +208,14 @@ eq(
   [["src/a.ts"], ["src/b.ts"]],
 );
 eq("a stage that wrote nothing reports an empty list, not undefined", s1.filesChanged, []);
-eq("an inherited session is surfaced", s2.resume, "plan");
 eq("a stage that inherited nothing says so", s1.resume, null);
+// The round that OPENED a session did not inherit it -- the config flag is true of
+// every round, but round 1 has no previous conversation to continue. Reporting the
+// flag verbatim made the first round of every resumed stage claim a handoff that
+// cannot exist. Both directions pinned, since asserting only the negative would be
+// satisfied by never reporting a resume at all.
+eq("the round that opened a session did not inherit one", s2.resume, null);
+eq("a later round on that same session did", s2b.resume, "plan");
 eq("the declared contract is surfaced", Object.keys(s2.expects || {}), ["pass"]);
 eq(
   "round-over-round artifact values survive, so a loop can be read as converging",
@@ -637,6 +643,69 @@ rmSync(root, { recursive: true, force: true });
     eq("a stage that reported usage is known", S("done").aiuKnown, true);
     eq("and carries the real figure", S("done").aiu, 7);
     rmSync(c, { recursive: true, force: true });
+  }
+
+  // A RESUMED STAGE'S COST IS CUMULATIVE, SO IT IS A DIFFERENCE, NOT A SUM.
+  // Real numbers from build6's fixer: round 1 reported 20.74 and round 2 reported
+  // 45.39, because round 2 continued round 1's session and its checkpoint carries
+  // the whole session's running total. Summing them claimed 66.13 for a stage that
+  // cost 45.39 -- and made every per-round figure wrong too. The tell that this is
+  // cumulative and not two independent calls is `totalPremiumRequests`: 1 then 2.
+  {
+    const w = mkdtempSync(path.join(tmpdir(), "ck-warm-"));
+    const wid = "w__warm__2026-01-01T00-00-00";
+    const wdir = path.join(w, "results", "chain-runs", "logs", wid);
+    const call = (dir, label, aiu, sessionId) => {
+      mkdirSync(path.join(wdir, dir), { recursive: true });
+      writeFileSync(
+        path.join(wdir, dir, `${label}.jsonl`),
+        [
+          { type: "assistant.message", data: { model: "m", outputTokens: 10, content: "ok" } },
+          { type: "session.usage_checkpoint", data: { totalNanoAiu: aiu * 1e9 } },
+          { type: "result", data: {} },
+        ]
+          .map((l) => JSON.stringify(l))
+          .join("\n"),
+      );
+      if (sessionId !== undefined)
+        writeFileSync(
+          path.join(wdir, dir, `${label}.argv.jsonl`),
+          JSON.stringify({ sessionId, model: "m" }),
+        );
+    };
+    // Resumed: both rounds on one session, checkpoints cumulative.
+    call("01-fix", "fix.r1", 20.74, "s-fix");
+    call("01-fix", "fix.r2", 45.39, "s-fix");
+    // Not resumed: a fresh session per round, so each checkpoint is already its own.
+    call("02-review", "review.r1", 27.52, "s-rev-1");
+    call("02-review", "review.r2", 26.51, "s-rev-2");
+    // No sidecar at all -- an older run. Must behave exactly as it did before.
+    call("03-legacy", "legacy", 9);
+    const wr = readRun(wdir, w);
+    const R = (id, round) => wr.stages.find((s) => s.id === id && (s.round || 0) === round);
+    eq("the round that opened a session reports its own cost", R("fix", 1).aiu, 20.74);
+    eq(
+      "a resumed round reports only what IT added, not the session total",
+      Number(R("fix", 2).aiu.toFixed(2)),
+      24.65,
+    );
+    eq(
+      "the resumed stage's rounds sum to the session total, not to more",
+      Number((R("fix", 1).aiu + R("fix", 2).aiu).toFixed(2)),
+      45.39,
+    );
+    eq(
+      "a stage with a fresh session per round is untouched",
+      [R("review", 1).aiu, R("review", 2).aiu],
+      [27.52, 26.51],
+    );
+    eq("a call with no session id is left exactly as it was", R("legacy", 0).aiu, 9);
+    eq(
+      "the run total counts the resumed session once",
+      Number(wr.totals.aiu.toFixed(2)),
+      Number((45.39 + 27.52 + 26.51 + 9).toFixed(2)),
+    );
+    rmSync(w, { recursive: true, force: true });
   }
 
   rmSync(r, { recursive: true, force: true });

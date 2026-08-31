@@ -387,9 +387,62 @@ function callFiles(stageDir) {
     const stem = n.replace(/\.live\.jsonl$/, ".jsonl");
     if (live && names.includes(stem)) continue; // settled copy wins
     const label = stem.replace(/\.jsonl$/, "");
-    out.push({ file: n, label, round: Number(label.match(/\.r(\d+)$/)?.[1] || 0), live });
+    // The argv sidecar is skipped as a CALL above, but it is the only place the
+    // CLI session id is recorded, and without it cost cannot be aggregated
+    // correctly -- see `applyMarginalAiu`. It is written when the call STARTS, so
+    // this works for an in-flight call too.
+    let sessionId = null;
+    try {
+      const raw = readFileSync(path.join(stageDir, `${label}.argv.jsonl`), "utf8");
+      sessionId = JSON.parse(raw.split("\n").find((l) => l.trim()) || "{}").sessionId || null;
+    } catch {
+      /* older runs wrote no sidecar */
+    }
+    out.push({
+      file: n,
+      label,
+      round: Number(label.match(/\.r(\d+)$/)?.[1] || 0),
+      live,
+      sessionId,
+    });
   }
   return out.sort((a, b) => a.round - b.round || a.label.localeCompare(b.label));
+}
+
+// COST IS CUMULATIVE PER SESSION, SO A CALL'S OWN COST IS A DIFFERENCE.
+//
+// The service reports `totalNanoAiu` as a running total for the whole CLI
+// session. When every call is its own session that is indistinguishable from a
+// per-call figure and summing is correct -- which is why this stayed invisible
+// until `resume: true` shipped. A resumed stage issues round 2 against round 1's
+// session, so round 2's checkpoint ALREADY CONTAINS round 1's spend. Measured on
+// a real run: fix round 1 = 20.74, round 2 = 45.39, and 45.39 IS the stage total.
+// Summing them reported 66.13 -- the stage overstated by 46%, every per-round
+// figure wrong, and the fixer libelled as the steepest-growing cost in the run.
+//
+// The tell that this is cumulative rather than coincidence: `totalPremiumRequests`
+// counts 1 then 2 across those same two files.
+//
+// The kernel already learned this at run 5 and fixed it in `kernel/cost.mjs`; the
+// canvas is a second, independent reader and re-committed the identical bug. So
+// rather than teach each of the several places that add cost up, subtract once
+// here: after this `call.aiu` is what THAT call cost, every existing sum is
+// correct, and a per-round row can honestly show a per-round number.
+//
+// Calls with no session id -- older runs that wrote no argv sidecar -- are left
+// exactly as they were, degrading to the previous behaviour rather than guessing.
+function applyMarginalAiu(calls) {
+  const seen = new Map();
+  for (const c of [...calls].sort((a, b) => (a.round || 0) - (b.round || 0))) {
+    if (c.aiu == null || !c.sessionId) continue;
+    const prior = seen.get(c.sessionId) ?? 0;
+    c.aiuSession = c.aiu;
+    // Clamped: a cumulative counter cannot legitimately decrease, and a negative
+    // cost would silently cancel out a sibling stage's real spend.
+    c.aiu = Math.max(0, c.aiu - prior);
+    seen.set(c.sessionId, Math.max(prior, c.aiuSession));
+  }
+  return calls;
 }
 
 // Runs from EVERY root, newest first. There is more than one results dir now --
@@ -622,11 +675,15 @@ export function readRun(runDir, root) {
         call.steps = dropEchoedSay(call.steps, call.finalText);
       }
       call.round = c.round;
+      call.sessionId = c.sessionId;
       // Reading a .live.jsonl means this call's process has not exited yet, which
       // is a REAL in-flight signal rather than an mtime guess.
       call.inFlight = !!c.live;
       return call;
     });
+    // Before anything reads a cost off these. A resumed stage's later rounds carry
+    // the whole session's running total, so this is where that becomes per-call.
+    applyMarginalAiu(calls);
 
     // ONE ROW PER ROUND, not one row per stage.
     //
@@ -838,6 +895,17 @@ export function readRun(runDir, root) {
   // channel most of the work actually travelled through. Fold them in from the run
   // record when it exists. Still no stage names, still generic.
   if (summary && Array.isArray(summary.stageLog)) {
+    // Which round OPENED each session, so a later round can be told apart from the
+    // one that started the conversation. Keyed by stage and element as well as the
+    // id itself: a fan-out stage gets a fresh session per element.
+    const sessionKey = (e) => `${e.id}#${e.iter || 0}#${e.sessionId}`;
+    const sessionOpenedAt = new Map();
+    for (const e of summary.stageLog) {
+      if (!e.sessionId) continue;
+      const k = sessionKey(e);
+      const r = e.round || 0;
+      if (!sessionOpenedAt.has(k) || r < sessionOpenedAt.get(k)) sessionOpenedAt.set(k, r);
+    }
     for (const st of stages) {
       // Match on iteration AND round. A fan-out stage shares its id across every
       // element, so matching on id alone unions all four chunks' files onto all
@@ -853,8 +921,19 @@ export function readRun(runDir, root) {
       const files = new Set();
       for (const e of entries) for (const f of e.filesChanged || []) files.add(f);
       st.filesChanged = [...files].sort();
-      // A stage inheriting another's conversation is a large unnamed handoff. Name it.
-      st.resume = entries.find((e) => e.resume)?.resume || null;
+      // A stage inheriting another's conversation is a large unnamed handoff. Name
+      // it -- but name it only when it HAPPENED. `resume` in the record is the
+      // stage's CONFIG, which is true of every round including the first, and the
+      // first round has no previous conversation to continue: it OPENS the session
+      // the later rounds inherit. Reporting the flag verbatim makes round 1 claim a
+      // handoff that cannot exist. The evidence is the session id -- a round truly
+      // resumed if its session was already open in an EARLIER round of this same
+      // stage and element.
+      const declaredResume = entries.find((e) => e.resume)?.resume || null;
+      const inherited = entries.some(
+        (e) => e.sessionId && sessionOpenedAt.get(sessionKey(e)) < (e.round || 0),
+      );
+      st.resume = inherited ? declaredResume || true : null;
       st.sessionIds = [...new Set(entries.map((e) => e.sessionId).filter(Boolean))];
       st.expects = entries.find((e) => e.expects)?.expects || null;
       // A stage that was handed tools and used none verified nothing, and its output
@@ -877,12 +956,12 @@ export function readRun(runDir, root) {
   }
   const newest = Math.max(0, planMtime, ...all.map((c) => c.mtime));
   const totals = {
-    // Safe to sum here: totalNanoAiu is session-cumulative, but each call is its
-    // own CLI session, and readCall already collapsed a call to its max (see the
-    // session.usage_checkpoint case above). Summing the per-call maxima is the
-    // run total. Summing the raw checkpoints instead would multiply the cost by
-    // the number of checkpoints -- which is how this harness previously reported
-    // a 9x-inflated number.
+    // Safe to sum here ONLY because `applyMarginalAiu` already turned each call's
+    // session-cumulative checkpoint into that call's own cost. The comment that
+    // used to sit here justified the sum with "each call is its own CLI session" --
+    // true when it was written, and made false by `resume: true` without anything
+    // failing. Summing raw checkpoints instead multiplies cost by the number of
+    // checkpoints, which is how this harness once reported a 9x-inflated number.
     aiu: all.reduce((n, c) => n + (c.aiu ?? 0), 0),
     // How much of the total is missing. A cost figure with unmetered calls in
     // it is a FLOOR, not the bill, and the view must be able to say so.

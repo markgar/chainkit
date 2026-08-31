@@ -419,7 +419,14 @@ function render(s) {
     if (st.declared && st.declared.tools === false)
       bits.push('<span class="chan">reasons only</span>');
     if (st.declared?.inLoop) bits.push('<span class="chan">in loop</span>');
-    const inherits = st.resume || st.declared?.resume;
+    // The same falsehood, one step subtler: declared resume is true of EVERY
+    // round of a resumed stage including the first, and round 1 has no previous
+    // conversation -- it OPENS the session the later rounds inherit. So a row that
+    // has run reports only what telemetry observed, and a row that has not yet run
+    // may only PREDICT a resume when there is an earlier round for it to resume.
+    const observed = st.resume;
+    const predicted = (st.round || 0) > 1 ? st.declared?.resume : null;
+    const inherits = observed || (st.status === "ran" ? null : predicted);
     if (inherits)
       bits.push(
         \`<span class="chan warn" title="this stage inherited another stage's whole conversation">↩ resumes \${esc(inherits === true ? "previous round" : inherits)}</span>\`,
