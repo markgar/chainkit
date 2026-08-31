@@ -515,6 +515,25 @@ rmSync(root, { recursive: true, force: true });
     );
     eq("the newest journal entry is the stage running now", S("gate").status, "running");
     eq("a stage the journal has never seen really has not started", S("later").status, "pending");
+    // A LOOP STAGE is journalled under the round it ran in, while its pending row
+    // still carries round 0. Keying on round misses exactly the stages a loop
+    // re-runs -- observed live: a recheck that passed and released the fan-out was
+    // still labelled "not started" while the build was already underway.
+    writeFileSync(
+      path.join(live, "_calls.jsonl"),
+      [
+        { seq: 1, id: "cmd", iter: 0, round: 0 },
+        { seq: 2, id: "think", iter: 0, round: 0 },
+        { seq: 3, id: "gate", iter: 0, round: 2 },
+      ]
+        .map((e) => JSON.stringify(e))
+        .join("\n") + "\n",
+    );
+    eq(
+      "a command stage that ran inside a loop round is not 'not started'",
+      readRun(live, r).stages.find((s) => s.id === "gate").status,
+      "running",
+    );
     rmSync(live, { recursive: true, force: true });
   }
 

@@ -771,9 +771,21 @@ export function readRun(runDir, root) {
     // the run is visible before it happens, not a list that grows from nothing.
     let maxSeq = 0;
     for (const seq of order.values()) if (seq > maxSeq) maxSeq = seq;
+    // Match on id and element, NOT on round. A pending row comes from the declared
+    // pipeline, so its round is 0, while a stage that ran inside a loop is journalled
+    // under the round it ran in -- so an exact key lookup misses precisely the
+    // stages a loop exists to re-run. Observed immediately: `plan-recheck` ran as
+    // round 1, returned ok, released the fan-out, and still showed "not started"
+    // while the build was underway.
+    const bestSeq = new Map();
+    for (const [key, seq] of order) {
+      const [id, it] = key.split("/");
+      const k = `${id}/${it}`;
+      if (seq > (bestSeq.get(k) || 0)) bestSeq.set(k, seq);
+    }
     for (const st of stages) {
       if (st.status !== "pending") continue;
-      const seq = order.get(`${st.id}/${st.iter || 0}/${st.round || 0}`);
+      const seq = bestSeq.get(`${st.id}/${st.iter || 0}`);
       if (!seq) continue;
       st.noModelCalls = true;
       st.status = seq < maxSeq ? "ran" : "running";
