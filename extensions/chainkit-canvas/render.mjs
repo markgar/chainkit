@@ -148,6 +148,27 @@ const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&l
 // most want to read. Only rewrite when the escapes clearly outnumber real
 // newlines, so ordinary prose that happens to mention a newline escape is
 // left alone.
+// Assigning innerHTML tears down and rebuilds the subtree even when the markup is
+// IDENTICAL, which resets the scroll position of everything inside it. The panel
+// repaints every 1.5s, so a long output block scrolled back to the top a moment
+// after you stopped scrolling -- on a FINISHED run, whose content cannot have
+// changed at all. Write only when the markup actually differs.
+//
+// Setters rather than a paint() call so the assignment sites stay assignments;
+// each is a multi-line template expression and wrapping them in calls is a
+// paren-balancing exercise with no upside.
+const painted = {};
+const el = {
+  set cards(h) {
+    if (painted.cards !== h) document.getElementById("cards").innerHTML = painted.cards = h;
+  },
+  set spend(h) {
+    if (painted.spend !== h) document.getElementById("spend").innerHTML = painted.spend = h;
+  },
+  set body(h) {
+    if (painted.body !== h) document.getElementById("body").innerHTML = painted.body = h;
+  },
+};
 const sayText = (t) => {
   const str = String(t ?? "");
   const escaped = (str.match(/\\\\n/g) || []).length;
@@ -199,15 +220,15 @@ function render(s) {
     : "";
 
   if (!run) {
-    document.getElementById("cards").innerHTML = "";
-    document.getElementById("spend").innerHTML = "";
-    document.getElementById("body").innerHTML =
+    el.cards = "";
+    el.spend = "";
+    el.body =
       \`<div class="empty">No runs found under <code>\${esc((s.roots || [s.root]).join(" or "))}</code>.<br>Run <code>node vendor/chainkit/run.mjs --chain .chainkit/chains/&lt;name&gt;.yaml</code> and this will populate live.</div>\`;
     return;
   }
 
   const t = run.totals;
-  document.getElementById("cards").innerHTML =
+  el.cards =
     card("stages", t.stages) +
     card("calls", t.calls) +
     card("tool calls", t.tools) +
@@ -233,7 +254,7 @@ function render(s) {
       aiu: run.stages.filter((s) => s.id === id).reduce((n, s) => n + s.aiu, 0),
     }))
     .filter((s) => s.aiu > 0);
-  document.getElementById("spend").innerHTML = tot > 0
+  el.spend = tot > 0
     ? \`<div class="split">\${byStage.map((s) =>
          \`<i style="width:\${(s.aiu / tot) * 100}%;background:\${idHue(s.id)}" title="\${esc(s.id)}"></i>\`).join("")}</div>
        <div class="legend">\${byStage.map((s) =>
@@ -305,7 +326,7 @@ function render(s) {
     return \`<div class="ghead"><span class="gname">\${esc(name)}</span><span class="grule"></span></div>\`;
   }
 
-  document.getElementById("body").innerHTML = run.stages.map((st) => groupHead(st) + \`
+  el.body = run.stages.map((st) => groupHead(st) + \`
     <div class="stage \${st.status === "pending" || st.status === "skipped" ? "pending" : ""}">
       <div class="shead">
         <span class="sord">\${String(st.seq ?? st.ord).padStart(2, "0")}</span>

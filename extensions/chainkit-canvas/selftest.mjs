@@ -576,6 +576,32 @@ rmSync(root, { recursive: true, force: true });
   const sayText = ctx.out;
   eq("an escaped-newline payload is unescaped for display", sayText("a\\nb\\nc"), "a\nb\nc");
   eq("ordinary multi-line prose is left alone", sayText("a\nb"), "a\nb");
+
+  // The repaint guard, EXECUTED. A parse check would not have caught what it
+  // shipped first: the setter body was rewritten to assign through itself, an
+  // infinite recursion that is perfectly valid syntax.
+  const from2 = src.indexOf("const painted = {};");
+  const writes = [];
+  const ctx2 = {
+    document: {
+      getElementById: (id) => ({
+        set innerHTML(h) {
+          writes.push([id, h]);
+        },
+      }),
+    },
+    out: null,
+  };
+  vm.createContext(ctx2);
+  new vm.Script(src.slice(from2, src.indexOf("\n};", from2) + 3) + "\nout = el;").runInContext(
+    ctx2,
+  );
+  ctx2.out.body = "<p>same</p>";
+  ctx2.out.body = "<p>same</p>";
+  eq("identical markup is written once, not twice", writes.length, 1);
+  ctx2.out.body = "<p>different</p>";
+  eq("changed markup is written", writes.length, 2);
+  eq("each pane is guarded independently", ((ctx2.out.cards = "x"), writes.length), 3);
   // The guard that keeps it from mangling real content: text with one mention of
   // an escape but many real newlines is prose, not a JSON payload.
   eq("prose that merely mentions an escape is untouched", sayText("a\nb\nc\\nd"), "a\nb\nc\\nd");
