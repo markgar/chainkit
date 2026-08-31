@@ -37,6 +37,44 @@ import { render, readPath } from "./context.mjs";
 // for an empty array -- valid JSON, so nothing failed; only the stage's `expects`
 // contract caught it. Longest-span selection keeps the fence as the recovery it was
 // meant to be (prose containing braces) without letting a fragment outrank the whole.
+//
+// Spans are found by MATCHING each opening delimiter to its own close, rather than
+// pairing the first `{` with the last `}`. Pairing by outermost index means a single
+// stray brace anywhere in the prose makes the object span unparseable, and then the
+// only span left to win is a nested one. A reviewer wrote "coalesce per `{orgId,
+// siteId}`" while narrating, and its verdict `{"pass":false,"findings":[...]}` was
+// extracted as the seven-element findings ARRAY -- valid JSON, wrong value, and the
+// run halted at chunk 6 of 7 after real spend. Same class as the fence bug above, and
+// the same thing caught it: only `expects` stood between a nested value and the chain
+// carrying it forward as a verdict.
+function matchingSpan(s, i) {
+  const open = s[i];
+  const close = open === "{" ? "}" : "]";
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let k = i; k < s.length; k++) {
+    const ch = s[k];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\") {
+      if (inString) escaped = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+    // A delimiter inside a string value is data, not structure.
+    if (inString) continue;
+    if (ch === open) depth++;
+    else if (ch === close && --depth === 0) return s.slice(i, k + 1);
+  }
+  return null;
+}
+
 function extractJson(text) {
   if (!text) return { ok: false, error: "empty output" };
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
@@ -44,16 +82,12 @@ function extractJson(text) {
   let best = null;
   for (const c of candidates) {
     const trimmed = c.trim();
-    // Take the outermost brace/bracket span, so trailing commentary is ignored.
-    for (const [open, close] of [
-      ["{", "}"],
-      ["[", "]"],
-    ]) {
-      const i = trimmed.indexOf(open);
-      const j = trimmed.lastIndexOf(close);
-      if (i < 0 || j <= i) continue;
-      const span = trimmed.slice(i, j + 1);
-      if (best && span.length <= best.length) continue;
+    for (let i = 0; i < trimmed.length; i++) {
+      const ch = trimmed[i];
+      if (ch !== "{" && ch !== "[") continue;
+      const span = matchingSpan(trimmed, i);
+      // Longest wins, so a nested value can never outrank the whole it sits in.
+      if (!span || (best && span.length <= best.length)) continue;
       try {
         best = { length: span.length, value: JSON.parse(span) };
       } catch {
@@ -506,6 +540,25 @@ export function selfTest() {
   CASES.push(["no calls at all is not an error", stitchJson(undefined).ok === false]);
   // Malformed JSON must FAIL, not half-parse into something plausible.
   CASES.push(["malformed JSON fails", extractJson('{"a": }').ok === false]);
+
+  // A stray brace in narration used to poison the object span, leaving a nested
+  // array as the only thing that parsed. Halted a real run at chunk 6 of 7.
+  const strayBrace =
+    "Coalesce in-flight builds per `{orgId, siteId}` before returning.\n" +
+    '{"pass":false,"findings":["a","b"]}';
+  CASES.push([
+    "a stray brace in prose does not yield a nested value",
+    extractJson(strayBrace).value?.pass === false &&
+      extractJson(strayBrace).value?.findings?.length === 2,
+  ]);
+  CASES.push([
+    "a brace inside a string value is data, not structure",
+    extractJson(String.raw`{"note":"use {a} here","ok":true}`).value?.ok === true,
+  ]);
+  CASES.push([
+    "an escaped quote does not end the string scan",
+    extractJson('{"note":"say \\"hi\\" {x}","ok":true}').value?.ok === true,
+  ]);
 
   // The reason a failed CLI run gave. Discarding it leaves an exit code, which
   // sends the reader to the logs for something the process already said aloud.
