@@ -190,6 +190,12 @@ const steps = [
   { name: "deadcode", cmd: "npx", args: ["knip", "--directory", here], cwd: hostRoot },
   { name: "chains", run: checkChains },
   { name: "selftest:kernel", cmd: "node", args: [path.join(here, "selftest.mjs")], cwd: here },
+  {
+    name: "selftest:completion",
+    cmd: "node",
+    args: [path.join(here, "completion.selftest.mjs")],
+    cwd: here,
+  },
   ...canvases.map((f) => ({
     name: `selftest:${path.basename(path.dirname(f))}`,
     cmd: "node",

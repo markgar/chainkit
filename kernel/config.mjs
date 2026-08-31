@@ -32,6 +32,7 @@ const STAGE_KEYS = new Set([
   "timeoutMs",
   "optional",
   "expects",
+  "completion",
   "note",
 ]);
 
@@ -54,6 +55,7 @@ const CHAIN_KEYS = new Set([
   "loop",
   "foreach",
   "gate",
+  "preflight",
   "seeds",
   "note",
 ]);
@@ -73,6 +75,10 @@ const ON_EXHAUSTED = new Set(["halt", "continue"]);
 // an array; `as` binds each element under a name the prompts render. That the
 // elements are "chunks of work" is a fact about the prompt, never about the engine.
 const FOREACH_KEYS = new Set(["over", "as", "stages", "loop", "gate", "expects", "max", "note"]);
+const COMPLETION_KEYS = new Set(["run", "max", "note"]);
+const PREFLIGHT_KEYS = new Set(["run", "note"]);
+const GATE_KEYS = new Set(["run", "repair", "note"]);
+const GATE_REPAIR_KEYS = new Set(["stages", "max", "note"]);
 const PARSE_MODES = new Set(["text", "json"]);
 
 function unknownKeys(obj, allowed, where) {
@@ -80,6 +86,8 @@ function unknownKeys(obj, allowed, where) {
     .filter((k) => !allowed.has(k))
     .map((k) => `${where}: unknown key "${k}"`);
 }
+
+const positiveInteger = (value) => Number.isSafeInteger(value) && value > 0;
 
 // Validate WITHOUT spending anything. Every one of these is knowable before the
 // first model call, and a chain that cannot possibly work should never cost money
@@ -109,6 +117,29 @@ function validateChain(chain, { promptRoot, readPrompt = defaultReadPrompt } = {
         if (s[k] !== undefined)
           errors.push(`stage "${s.id}": run stages take no "${k}" -- no model is called`);
     }
+
+    if (s.completion !== undefined) {
+      if (s.run) {
+        errors.push(
+          `stage "${s.id}": run stages cannot have completion -- there is no agent session to resume`,
+        );
+      } else if (
+        typeof s.completion !== "object" ||
+        s.completion === null ||
+        Array.isArray(s.completion)
+      ) {
+        errors.push(`stage "${s.id}": completion must be a mapping`);
+      } else {
+        errors.push(...unknownKeys(s.completion, COMPLETION_KEYS, `stage "${s.id}".completion`));
+        if (typeof s.completion.run !== "string" || !s.completion.run.trim())
+          errors.push(`stage "${s.id}".completion: run must be a non-empty shell command`);
+        if (!positiveInteger(s.completion.max))
+          errors.push(
+            `stage "${s.id}".completion: max must be a positive safe integer (bound the retries)`,
+          );
+      }
+    }
+
     // EVERY MODEL STAGE NAMES ITS MODEL. Not defaulted by the kernel, on purpose: an
     // absent model is not "the sensible one", it is whatever the CLI happens to
     // pick that day, and a run whose record says `model: undefined` cannot be
@@ -173,6 +204,75 @@ function validateChain(chain, { promptRoot, readPrompt = defaultReadPrompt } = {
     }
   }
 
+  if (chain.preflight !== undefined) {
+    if (
+      typeof chain.preflight !== "object" ||
+      chain.preflight === null ||
+      Array.isArray(chain.preflight)
+    ) {
+      errors.push("preflight: must be a mapping");
+    } else {
+      errors.push(...unknownKeys(chain.preflight, PREFLIGHT_KEYS, "preflight"));
+      if (typeof chain.preflight.run !== "string" || !chain.preflight.run.trim())
+        errors.push("preflight: run must be a non-empty shell command");
+      else {
+        for (const ref of placeholders(chain.preflight.run)) {
+          const root = rootOf(ref);
+          if (!(root in (chain.seeds || {})))
+            errors.push(`preflight: run references {{${ref}}}, which is not a seed`);
+          else {
+            const value = chain.seeds[root];
+            if (ref !== root)
+              errors.push(`preflight: run references field {{${ref}}} on scalar seed "${root}"`);
+            else if (
+              (typeof value === "string" && value.startsWith("@")) ||
+              (value !== null && typeof value === "object")
+            )
+              errors.push(
+                `preflight: run interpolates {{${ref}}}, which is not a scalar literal seed`,
+              );
+          }
+        }
+      }
+    }
+  }
+
+  if (chain.gate !== undefined && typeof chain.gate !== "string") {
+    if (typeof chain.gate !== "object" || chain.gate === null || Array.isArray(chain.gate)) {
+      errors.push("gate: must be a shell-command string or a mapping");
+    } else {
+      errors.push(...unknownKeys(chain.gate, GATE_KEYS, "gate"));
+      if (typeof chain.gate.run !== "string" || !chain.gate.run.trim())
+        errors.push("gate: run must be a non-empty shell command");
+      const repair = chain.gate.repair;
+      if (repair !== undefined) {
+        if (typeof repair !== "object" || repair === null || Array.isArray(repair)) {
+          errors.push("gate.repair: must be a mapping");
+        } else {
+          errors.push(...unknownKeys(repair, GATE_REPAIR_KEYS, "gate.repair"));
+          if (!repair.stages?.length) errors.push("gate.repair: stages must be a non-empty list");
+          else {
+            for (const id of repair.stages) {
+              if (!seen.has(id))
+                errors.push(`gate.repair: names stage "${id}", which does not exist`);
+              const stage = stages.find((candidate) => candidate.id === id);
+              if (stage?.produces)
+                errors.push(
+                  `gate.repair: stage "${id}" must not produce an artifact -- it runs only after a failed final gate`,
+                );
+              if ((chain.loop?.stages || []).includes(id))
+                errors.push(`gate.repair: stage "${id}" is also in the chain loop`);
+              if ((chain.foreach?.stages || []).includes(id))
+                errors.push(`gate.repair: stage "${id}" is also in the foreach`);
+            }
+          }
+          if (!positiveInteger(repair.max))
+            errors.push("gate.repair: max must be a positive safe integer (bound the retries)");
+        }
+      }
+    }
+  }
+
   // ARTIFACT REACHABILITY. Every {{placeholder}} must have a producer.
   //
   // Checked statically because the alternative is discovering it mid-run, after
@@ -184,6 +284,9 @@ function validateChain(chain, { promptRoot, readPrompt = defaultReadPrompt } = {
   const loopIds = new Set(chain.loop?.stages || []);
   const fe = chain.foreach || null;
   const feIds = new Set(fe?.stages || []);
+  const gateRepairIds = new Set(
+    typeof chain.gate === "object" ? chain.gate.repair?.stages || [] : [],
+  );
   const available = new Set(Object.keys(chain.seeds || {}));
   const loopProduces = stages.filter((s) => loopIds.has(s.id)).map((s) => s.produces);
   const feProduces = stages.filter((s) => feIds.has(s.id)).map((s) => s.produces);
@@ -257,6 +360,27 @@ function validateChain(chain, { promptRoot, readPrompt = defaultReadPrompt } = {
           );
       }
     }
+    if (s.completion && typeof s.completion === "object" && typeof s.completion.run === "string") {
+      const visible = new Set(available);
+      if (loopIds.has(s.id)) for (const p of loopProduces) visible.add(p);
+      if (feIds.has(s.id)) {
+        for (const p of feProduces) visible.add(p);
+        if (fe?.as) visible.add(fe.as);
+      }
+      // The postcondition runs after the stage has produced its artifact.
+      if (s.produces) visible.add(s.produces);
+      for (const ref of placeholders(s.completion.run)) {
+        if (!visible.has(rootOf(ref)))
+          errors.push(
+            `stage "${s.id}".completion: run references {{${ref}}}, which is unavailable after the stage`,
+          );
+        else if (nonScalar.has(ref))
+          errors.push(
+            `stage "${s.id}".completion: run interpolates {{${ref}}}, which is structured (not a scalar). ` +
+              `Read it from $CHAINKIT_ARTIFACTS instead, or interpolate a scalar field`,
+          );
+      }
+    }
     if (s.produces) available.add(s.produces);
   }
 
@@ -267,7 +391,7 @@ function validateChain(chain, { promptRoot, readPrompt = defaultReadPrompt } = {
     if (!chain.loop.stages?.length) errors.push("loop: no stages");
     // An UNBOUNDED loop is not allowed. A review that never passes would otherwise
     // spend until something else stops it, and "something else" is a human noticing.
-    if (!(chain.loop.max > 0)) errors.push("loop: max must be a positive number");
+    if (!positiveInteger(chain.loop.max)) errors.push("loop: max must be a positive safe integer");
     if (!chain.loop.until) errors.push("loop: missing until");
     else {
       const art = rootOf(chain.loop.until);
@@ -310,7 +434,8 @@ function validateChain(chain, { promptRoot, readPrompt = defaultReadPrompt } = {
 
     // Same rule as the loop, same reason: an unbounded fan-out is a planner emitting
     // 500 chunks and a bill nobody authorised.
-    if (!(fe.max > 0)) errors.push("foreach: max must be a positive number (bound the fan-out)");
+    if (!positiveInteger(fe.max))
+      errors.push("foreach: max must be a positive safe integer (bound the fan-out)");
 
     if (fe.loop) {
       errors.push(...unknownKeys(fe.loop, LOOP_KEYS, "foreach.loop"));
@@ -318,7 +443,8 @@ function validateChain(chain, { promptRoot, readPrompt = defaultReadPrompt } = {
       for (const id of fe.loop.stages || [])
         if (!feIds.has(id))
           errors.push(`foreach.loop: stage "${id}" is not one of the foreach stages`);
-      if (!(fe.loop.max > 0)) errors.push("foreach.loop: max must be a positive number");
+      if (!positiveInteger(fe.loop.max))
+        errors.push("foreach.loop: max must be a positive safe integer");
       if (!fe.loop.until) errors.push("foreach.loop: missing until");
       else if (!feProduces.includes(rootOf(fe.loop.until)))
         errors.push(
@@ -527,6 +653,7 @@ export function resolveStages(chain) {
       timeoutMs: s.timeoutMs ?? d.timeoutMs ?? 900000,
       optional: !!s.optional,
       expects: s.expects || null,
+      completion: s.completion || null,
     };
     // A RUN STAGE TAKES NO MODEL DEFAULTS. Folding in `defaults.model` here would
     // put a model on a stage that never calls one, and the run record is the thing
@@ -626,6 +753,74 @@ export function selfTest() {
   const V = (c) => validateChain(c, { readPrompt });
 
   CASES.push(["a well-formed chain validates clean", V(base).length === 0]);
+  CASES.push([
+    "a legacy string gate remains valid",
+    V({ ...base, gate: "pnpm check" }).length === 0,
+  ]);
+  CASES.push([
+    "a repairable final gate validates",
+    V({
+      ...base,
+      stages: [...base.stages, { id: "integration-fix", prompt: "a.md" }],
+      gate: { run: "pnpm check", repair: { stages: ["integration-fix"], max: 2 } },
+    }).length === 0,
+  ]);
+  CASES.push([
+    "a repairable gate requires a bounded retry count",
+    V({
+      ...base,
+      gate: { run: "pnpm check", repair: { stages: ["code"] } },
+    }).some((e) => e.includes("bound the retries")),
+  ]);
+  CASES.push([
+    "a repairable gate must name real stages",
+    V({
+      ...base,
+      gate: { run: "pnpm check", repair: { stages: ["missing"], max: 2 } },
+    }).some((e) => e.includes('stage "missing"')),
+  ]);
+  CASES.push([
+    "a final-gate repair stage cannot produce an artifact",
+    V({
+      ...base,
+      gate: { run: "pnpm check", repair: { stages: ["code"], max: 2 } },
+    }).some((e) => e.includes("must not produce an artifact")),
+  ]);
+  CASES.push([
+    "a repairable gate rejects an unsafe retry bound",
+    V({
+      ...base,
+      stages: [...base.stages, { id: "integration-fix", prompt: "a.md" }],
+      gate: {
+        run: "pnpm check",
+        repair: { stages: ["integration-fix"], max: Number.POSITIVE_INFINITY },
+      },
+    }).some((e) => e.includes("positive safe integer")),
+  ]);
+  CASES.push([
+    "an explicit preflight command validates",
+    V({ ...base, preflight: { run: 'test -z "$(git status --porcelain)"' } }).length === 0,
+  ]);
+  CASES.push([
+    "preflight may interpolate a scalar literal seed",
+    V({
+      ...base,
+      seeds: { spec: "", branch: "main" },
+      preflight: { run: "test {{branch}} = main" },
+    }).length === 0,
+  ]);
+  CASES.push([
+    "preflight cannot interpolate a file-backed seed",
+    V({ ...base, seeds: { spec: "@spec.md" }, preflight: { run: "test -n {{spec}}" } }).some((e) =>
+      e.includes("not a scalar literal seed"),
+    ),
+  ]);
+  CASES.push([
+    "preflight cannot reference a field on a scalar seed",
+    V({ ...base, seeds: { spec: "" }, preflight: { run: "test -n {{spec.path}}" } }).some((e) =>
+      e.includes("field {{spec.path}}"),
+    ),
+  ]);
 
   // "Nothing is fixed" only holds if an omission is caught rather than absorbed.
   CASES.push([
@@ -711,6 +906,62 @@ export function selfTest() {
       e.includes("run must be a string"),
     ),
   ]);
+  // ---- stage completion: a deterministic postcondition owned by its agent ------
+  const withCompletion = (completion) => ({
+    ...base,
+    stages: [{ ...base.stages[0], completion }, base.stages[1]],
+  });
+  CASES.push([
+    "a bounded completion command is valid",
+    V(withCompletion({ run: "pnpm check", max: 3 })).length === 0,
+  ]);
+  CASES.push([
+    "completion is rejected on a command stage because no agent can resume",
+    V({
+      ...base,
+      stages: [{ id: "fmt", run: "pnpm format", completion: { run: "pnpm check", max: 2 } }],
+    }).some((e) => e.includes("no agent session to resume")),
+  ]);
+  CASES.push([
+    "completion must be a mapping",
+    V(withCompletion("pnpm check")).some((e) => e.includes("completion must be a mapping")),
+  ]);
+  CASES.push([
+    "completion requires a non-empty command",
+    V(withCompletion({ run: "", max: 2 })).some((e) => e.includes("non-empty shell command")),
+  ]);
+  CASES.push([
+    "completion retries must be bounded",
+    V(withCompletion({ run: "pnpm check" })).some((e) => e.includes("bound the retries")),
+  ]);
+  for (const badMax of [1.5, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1]) {
+    CASES.push([
+      `completion rejects non-safe bound ${badMax}`,
+      V(withCompletion({ run: "pnpm check", max: badMax })).some((e) =>
+        e.includes("positive safe integer"),
+      ),
+    ]);
+  }
+  CASES.push([
+    "completion rejects unknown keys",
+    V(withCompletion({ run: "pnpm check", max: 2, retries: 2 })).some((e) =>
+      e.includes('unknown key "retries"'),
+    ),
+  ]);
+  CASES.push([
+    "completion may reference the stage artifact it checks",
+    V(withCompletion({ run: "node check.mjs plan", max: 2 })).length === 0,
+  ]);
+  CASES.push([
+    "completion refuses an unavailable artifact",
+    V(withCompletion({ run: "node check.mjs {{missing}}", max: 2 })).some((e) =>
+      e.includes("unavailable after the stage"),
+    ),
+  ]);
+  CASES.push([
+    "resolved stages retain completion configuration",
+    resolveStages(withCompletion({ run: "pnpm check", max: 2 })).at(0).completion?.max === 2,
+  ]);
   // A command is rendered like a prompt, so it gets the same static reachability
   // check -- knowable before the run, so it must not cost one to discover.
   CASES.push([
@@ -751,6 +1002,12 @@ export function selfTest() {
     "an unbounded loop is rejected",
     V({ ...looped, loop: { stages: ["fix"], until: "verdict.pass" } }).some((e) =>
       e.includes("max must be"),
+    ),
+  ]);
+  CASES.push([
+    "a loop rejects a fractional bound",
+    V({ ...looped, loop: { ...looped.loop, max: 1.5 } }).some((e) =>
+      e.includes("positive safe integer"),
     ),
   ]);
   CASES.push([
@@ -1074,6 +1331,10 @@ export function selfTest() {
     FE({ max: 0 }).some((e) => e.includes("bound the fan-out")),
   ]);
   CASES.push([
+    "a fan-out rejects an unsafe bound",
+    FE({ max: Number.POSITIVE_INFINITY }).some((e) => e.includes("positive safe integer")),
+  ]);
+  CASES.push([
     "an inner loop stage outside the foreach is an error",
     FE({ loop: { stages: ["plan"], until: "verdict.pass", max: 3 } }).some((e) =>
       e.includes("not one of the foreach stages"),
@@ -1088,6 +1349,12 @@ export function selfTest() {
   CASES.push([
     "an unbounded inner loop is an error",
     FE({ loop: { stages: ["review"], until: "verdict.pass", max: 0 } }).some((e) =>
+      e.includes("foreach.loop: max"),
+    ),
+  ]);
+  CASES.push([
+    "an inner loop rejects a fractional bound",
+    FE({ loop: { stages: ["review"], until: "verdict.pass", max: 1.5 } }).some((e) =>
       e.includes("foreach.loop: max"),
     ),
   ]);

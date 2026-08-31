@@ -142,6 +142,10 @@ function stageHtml(s, n) {
     s.expects
       ? \`<span class="pill" title="declared key contract — a reworded prompt that drops one of these fails the stage">⊨ \${esc(Object.keys(s.expects).join(", "))}</span>\`
       : "",
+    s.completion
+      ? \`<span class="pill resume" title="\${esc(s.completion.run)}">✓ completion · max \${esc(s.completion.max)}</span>\`
+      : "",
+    s.inGateRepair ? '<span class="pill resume">final gate repair</span>' : "",
   ].join("");
 
   const uses = (s.uses || []).length
@@ -223,7 +227,7 @@ function render(st) {
   if (openedLoop) html += \`</div><div class="loopfoot">└ then the gate</div>\`;
 
   const gate = d.gate
-    ? \`<div class="gate"><div class="k">GATE — the chain's own definition of done</div><div class="mono">\${esc(d.gate)}</div></div>\`
+    ? \`<div class="gate"><div class="k">GATE — the chain's own definition of done\${d.gate.repair ? " · repairs via " + esc(d.gate.repair.stages.join(", ")) + " · max " + esc(d.gate.repair.max) : ""}</div><div class="mono">\${esc(d.gate.run)}</div></div>\`
     : \`<div class="gate"><div class="k" style="color:var(--warn)">NO GATE — nothing checks the result, so this chain can only ever report that its stages ran</div></div>\`;
 
   root.innerHTML = problems +

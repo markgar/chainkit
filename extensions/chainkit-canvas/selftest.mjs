@@ -102,7 +102,14 @@ writeFileSync(
   path.join(root, "results", "chain-runs", `${runId}.json`),
   JSON.stringify({
     stageLog: [
-      { id: "plan", round: 0, filesChanged: [], sessionId: "s-plan", resume: null },
+      {
+        id: "plan",
+        round: 0,
+        filesChanged: [],
+        sessionId: "s-plan",
+        resume: null,
+        completion: { attempt: 1, max: 3, command: "pnpm check", code: 0, ok: true },
+      },
       {
         id: "review",
         round: 0,
@@ -127,7 +134,15 @@ writeFileSync(
   JSON.stringify({
     name: "fixture",
     stages: [
-      { id: "plan", ord: 1, model: "model-a", tools: true, produces: "plan", parse: "text" },
+      {
+        id: "plan",
+        ord: 1,
+        model: "model-a",
+        tools: true,
+        produces: "plan",
+        parse: "text",
+        completion: { run: "pnpm check", max: 3 },
+      },
       { id: "review", ord: 2, model: "model-b", tools: false, produces: "verdict", parse: "json" },
       {
         id: "nobody-has-ever-seen-this",
@@ -161,6 +176,8 @@ eq(
   [1, 2, 2, 3, 4],
 );
 eq("an unknown stage name still renders", s3.id, "nobody-has-ever-seen-this");
+eq("a declared completion command reaches the run view", s1.declared.completion.run, "pnpm check");
+eq("a completed postcondition reaches the run view", s1.completion[0].ok, true);
 
 eq(
   "loop rounds are separate ROWS, in the order they ran",
@@ -829,6 +846,19 @@ rmSync(root, { recursive: true, force: true });
   }
   eq("the page's inline script parses", syntaxError, null);
   eq("the page renders the non-model channels", html.includes("chans"), true);
+  eq(
+    "call disclosure uses a keyboard-accessible button",
+    html.includes('<button type="button" class="chead"') &&
+      html.includes('aria-expanded="') &&
+      html.includes('aria-controls="'),
+    true,
+  );
+  eq(
+    "refresh failures visibly mark retained telemetry as stale",
+    html.includes("RECONNECTING · data ") &&
+      html.includes("last successful snapshot remains visible"),
+    true,
+  );
   // A stage's status must reach the STYLESHEET, not just its right-hand label:
   // a stage's calls run tall, so which stage you are inside has to be legible
   // from the card, and "running now" has to look different from "finished an

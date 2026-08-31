@@ -62,6 +62,9 @@ export function page() {
   .runstate.failed, .runstate.halted { color: var(--bad); }
   .runsummary { min-width: 0; color: var(--muted); font-size: 12px; font-weight: 400;
                 overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .connection { display: none; margin-left: auto; color: var(--warn); font-size: 11px;
+                font-weight: 600; white-space: nowrap; }
+  .connection.show { display: inline; }
   @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .25 } }
   .cards { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0 6px; }
   .card { border: 1px solid var(--border-color-default, #d0d7de); border-radius: 8px;
@@ -109,9 +112,11 @@ export function page() {
   .sord { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 11px; }
   .call { border: 1px solid var(--border-color-default, #d0d7de); border-radius: 8px;
           margin-bottom: 6px; overflow: hidden; }
-  .chead { display: flex; align-items: center; gap: 8px; padding: 7px 10px; cursor: pointer;
-           background: var(--background-color-muted, #f6f8fa); }
+  .chead { width: 100%; display: flex; align-items: center; gap: 8px; padding: 7px 10px;
+           cursor: pointer; border: 0; border-radius: 0; text-align: left; font: inherit;
+           color: inherit; background: var(--background-color-muted, #f6f8fa); }
   .chead:hover { filter: brightness(0.985); }
+  .chead:focus-visible { outline: 2px solid var(--accent, #0969da); outline-offset: -2px; }
   .tag { font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 999px;
          border: 1px solid currentColor; color: var(--muted); }
   .caret { color: var(--muted); font-size: 10px; width: 9px; }
@@ -181,8 +186,8 @@ export function page() {
               font-size: 11px; padding: 0 3px; border-radius: 3px;
               background: var(--background-color-neutral, rgba(127,127,127,.18)); }
   .empty { color: var(--muted); padding: 24px 0; }
-  .warn { background: #3a2a00; border: 1px solid #7a5a00; color: #ffd479; padding: 8px 10px;
-          border-radius: 6px; margin-bottom: 10px; font-size: 12px; line-height: 1.45; }
+  .warning-banner { background: #3a2a00; border: 1px solid #7a5a00; color: #ffd479; padding: 8px 10px;
+                    border-radius: 6px; margin-bottom: 10px; font-size: 12px; line-height: 1.45; }
 
   /* A stage's structured output, when its final message parsed as JSON. Rendered
      as key/value rows WITHOUT knowing what the keys mean -- any chain's json
@@ -217,7 +222,7 @@ export function page() {
 </head>
 <body>
   <div id="top">
-    <h1><span id="dot" class="dot"></span> chainkit<span id="tagname" style="color:var(--muted);font-weight:400"></span><span id="runstate" class="runstate"></span><span id="runsummary" class="runsummary"></span></h1>
+    <h1><span id="dot" class="dot"></span> chainkit<span id="tagname" style="color:var(--muted);font-weight:400"></span><span id="runstate" class="runstate"></span><span id="runsummary" class="runsummary"></span><span id="connection" class="connection" aria-live="polite"></span></h1>
     <div class="sub"><select id="runs"></select></div>
     <div id="warn"></div>
     <div id="cards" class="cards"></div>
@@ -340,6 +345,7 @@ let openKey = null;
 // runs all rendered the SAME run and there was no way to tell from the UI.
 // NOTE: no backticks in this file. It is one big template literal.
 let pinned = null;
+let lastSuccessAt = 0;
 
 // A fixed palette cycled by stage INDEX. Deliberately not a map from stage name
 // to colour: the view must not know any stage names, and a chain with stages
@@ -380,7 +386,7 @@ function render(s) {
   // An instrument that cannot be trusted must say so rather than render a
   // confident blend of two runs.
   document.getElementById("warn").innerHTML = s.ambiguous
-    ? \`<div class="warn">⚠ \${esc(s.ambiguous)}</div>\`
+    ? \`<div class="warning-banner">⚠ \${esc(s.ambiguous)}</div>\`
     : "";
 
   if (!run) {
@@ -475,6 +481,7 @@ function render(s) {
     if (st.declared && st.declared.tools === false)
       bits.push('<span class="chan">reasons only</span>');
     if (st.declared?.inLoop) bits.push('<span class="chan">in loop</span>');
+    if (st.declared?.inGateRepair) bits.push('<span class="chan">final gate repair</span>');
     // Same weight as the rest: a resumed session is a handoff fact about the stage,
     // exactly like the tools it was given and the contract it must satisfy. Guarded
     // rather than pushed unconditionally -- an empty string is still an entry, and
@@ -489,6 +496,15 @@ function render(s) {
       bits.push(
         \`<span class="chan" title="declared key contract">⊨ \${esc(Object.keys(st.expects).join(", "))}</span>\`,
       );
+    if (st.declared?.completion) {
+      const checks = st.completion || [];
+      const latest = checks.at(-1);
+      const state = latest ? (latest.ok ? "✓" : "✗") : "⊨";
+      const cls = latest && !latest.ok ? "chan warn" : "chan";
+      bits.push(
+        \`<span class="\${cls}" title="\${esc(st.declared.completion.run)}">\${state} completion · max \${st.declared.completion.max}</span>\`,
+      );
+    }
     if (st.filesChanged && st.filesChanged.length)
       bits.push(
         \`<span class="chan" title="\${esc(st.filesChanged.join("\\n"))}">✎ \${st.filesChanged.length} file\${st.filesChanged.length === 1 ? "" : "s"}</span>\`,
@@ -561,6 +577,7 @@ function render(s) {
       \${st.rounds.map((p) => {
         const key = (st.key || st.id) + "/" + p.label;
         const isOpen = key === activeKey;
+        const panelId = "call-" + String(st.seq ?? st.ord) + "-" + String(p.label).replace(/[^a-zA-Z0-9_-]/g, "-");
         const flight = p.inFlight ? '<span class="dot live" title="call in flight"></span>' : "";
         const out = outputHtml(p.output);
         const toolw = Math.max(10, ...p.steps.filter(x => x.kind !== "say").map(x => (x.name || "").length + 1));
@@ -569,10 +586,10 @@ function render(s) {
           : \`<div class="step\${x.par > 1 ? " pgrp" : ""}"><span class="par">\${x.par > 1 && x.parFirst ? "\\u2225" + x.par : ""}</span><span class="st \${x.status}">\${x.status === "ok" ? "✓" : x.status === "failed" ? "✗" : x.status === "running" ? "◐" : "·"}</span><span class="tool">\${esc(x.name)}</span><span class="detail mono">\${esc(x.detail)}</span></div>\`
         ).join("") || (out ? "" : '<div class="step"><span class="detail">no tool calls recorded</span></div>');
         return \`<div class="call \${isOpen ? "open" : ""}" data-key="\${esc(key)}">
-          <div class="chead">
+          <button type="button" class="chead" aria-expanded="\${isOpen}" aria-controls="\${esc(panelId)}">
             <span class="caret">\${isOpen ? "▾" : "▸"}</span>
             \${st.rounds.length > 1
-              ? \`<span class="tag" title="\${esc(p.label)}">\${p.round ? "round " + p.round : "call"}</span>\`
+              ? \`<span class="tag" title="\${esc(p.label)}">\${p.attempt ? "completion attempt " + (p.attempt + 1) : p.round ? "round " + p.round : "call"}</span>\`
               : ""}
             \${flight}
             <span class="detail">\${p.steps.length} step\${p.steps.length === 1 ? "" : "s"}\${out ? " · output" : ""}\${p.peakParallel > 1 ? " · up to " + p.peakParallel + " at once" : ""}</span>
@@ -580,8 +597,8 @@ function render(s) {
             \${st.rounds.length > 1
               ? \`<span class="detail">\${p.toolCount} tools · \${p.aiu == null ? "AiU not reported yet" : p.aiu.toFixed(2) + " AiU"}</span>\`
               : \`<span class="detail">\${p.aiu == null ? "AiU not reported yet" : ""}</span>\`}
-          </div>
-          <div class="steps" style="--toolw:\${toolw}">\${out}\${steps}</div>
+          </button>
+          <div id="\${esc(panelId)}" class="steps" style="--toolw:\${toolw}">\${out}\${steps}</div>
         </div>\`;
       }).join("")}
     </div>\`).join("");
@@ -599,8 +616,19 @@ function render(s) {
 async function tick() {
   try {
     const r = await fetch("/state" + (pinned == null ? "" : "?run=" + encodeURIComponent(pinned)));
+    if (!r.ok) throw new Error("HTTP " + r.status);
     render(await r.json());
-  } catch (e) { /* transient: the extension may be reloading */ }
+    lastSuccessAt = Date.now();
+    const connection = document.getElementById("connection");
+    connection.className = "connection";
+    connection.textContent = "";
+  } catch (e) {
+    const connection = document.getElementById("connection");
+    const age = lastSuccessAt ? Math.max(1, Math.round((Date.now() - lastSuccessAt) / 1000)) : null;
+    connection.className = "connection show";
+    connection.textContent = age ? "RECONNECTING · data " + age + "s old" : "CONNECTING";
+    connection.title = "The dashboard cannot refresh. The last successful snapshot remains visible.";
+  }
 }
 document.getElementById("runs").onchange = (e) => { pinned = e.target.value; tick(); };
 tick();

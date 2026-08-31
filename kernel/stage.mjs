@@ -207,6 +207,47 @@ function appendAppealNote(prompt, stage) {
   return prompt + APPEAL_NOTE;
 }
 
+function composeStagePrompt(
+  stage,
+  renderedTemplate,
+  deterministicFailure = null,
+  completionCommand = stage.completion?.run,
+) {
+  const completionRequirement = stage.completion
+    ? [
+        "",
+        "## Deterministic completion requirement",
+        "",
+        "This stage is not complete until this command succeeds:",
+        "",
+        `\`${completionCommand}\``,
+        "",
+        "Run it yourself and fix every failure before returning. Chainkit will run it independently",
+        `after your turn and resume this stage if it is still red (maximum ${stage.completion.max} attempt(s)).`,
+      ].join("\n")
+    : "";
+  const failedCheck = deterministicFailure
+    ? [
+        "",
+        "## Deterministic check failed",
+        "",
+        deterministicFailure.context ||
+          "Your previous turn did not satisfy the command Chainkit requires.",
+        "Repair the repository, run the check yourself, and do not return until it passes.",
+        "",
+        `Command: \`${deterministicFailure.command}\``,
+        deterministicFailure.attempt && deterministicFailure.max
+          ? `Attempt: ${deterministicFailure.attempt}/${deterministicFailure.max}`
+          : "",
+        "",
+        "```text",
+        deterministicFailure.tail || deterministicFailure.error || "(no output captured)",
+        "```",
+      ].join("\n")
+    : "";
+  return appendAppealNote(`${renderedTemplate}${completionRequirement}${failedCheck}`, stage);
+}
+
 export async function runStage({
   stage,
   ctx,
@@ -215,6 +256,8 @@ export async function runStage({
   logRoot,
   round = 0,
   iter = 0,
+  attempt = 0,
+  deterministicFailure = null,
   sessions = new Map(),
   maxCredits,
 }) {
@@ -222,9 +265,17 @@ export async function runStage({
   // render() THROWS on a placeholder no stage produced. That is deliberate: a
   // prompt that silently loses its spec section still looks well-formed and still
   // returns a plausible answer, and nothing downstream can tell.
-  const prompt = appendAppealNote(render(template, ctx), stage);
+  const completionCommand = stage.completion ? render(stage.completion.run, ctx) : null;
+  const prompt = composeStagePrompt(
+    stage,
+    render(template, ctx),
+    deterministicFailure,
+    completionCommand,
+  );
 
-  const label = `${stage.id}${iter ? `.i${iter}` : ""}${round ? `.r${round}` : ""}`;
+  const label =
+    `${stage.id}${iter ? `.i${iter}` : ""}${round ? `.r${round}` : ""}` +
+    `${attempt ? `.a${attempt + 1}` : ""}`;
   // ONE LOG DIR PER ITERATION. Under a fan-out the same stage id runs N times, and
   // a shared dir would collapse "code, three chunks" into one stage in every view --
   // the exact per-chunk attribution the fan-out exists to give. Iteration 0 (no
@@ -378,7 +429,15 @@ export async function runStage({
 // Returns the SAME result contract as runStage, so run.mjs's execute() treats both
 // identically -- artifact store, tree-delta accounting, halting, `optional`. That
 // symmetry is the point: a run stage is a first-class stage, not a side channel.
-export async function runCommandStage({ stage, ctx, workDir, logRoot, round = 0, iter = 0 }) {
+export async function runCommandStage({
+  stage,
+  ctx,
+  workDir,
+  logRoot,
+  round = 0,
+  iter = 0,
+  attempt = 0,
+}) {
   // The command is RENDERED, exactly like a prompt, so it can close over artifacts:
   // `run: pnpm test {{chunk.id}}`. render() throws on a placeholder no stage
   // produced -- the same hard failure a prompt gets, and for the same reason. A
@@ -386,7 +445,9 @@ export async function runCommandStage({ stage, ctx, workDir, logRoot, round = 0,
   // wrong target and exits 0.
   const command = render(stage.run, ctx);
 
-  const label = `${stage.id}${iter ? `.i${iter}` : ""}${round ? `.r${round}` : ""}`;
+  const label =
+    `${stage.id}${iter ? `.i${iter}` : ""}${round ? `.r${round}` : ""}` +
+    `${attempt ? `.a${attempt + 1}` : ""}`;
   const logDir = path.join(
     logRoot,
     `${String(stage.ord ?? 0).padStart(2, "0")}-${stage.id}${iter ? `__i${iter}` : ""}`,
@@ -461,6 +522,8 @@ export async function runCommandStage({ stage, ctx, workDir, logRoot, round = 0,
       ok: false,
       error: `stage "${stage.id}" (run) timed out after ${stage.timeoutMs}ms: ${command}`,
       kind: "timeout",
+      command,
+      output: output.slice(-12000),
       rawPath,
       wallMs,
     };
@@ -474,6 +537,9 @@ export async function runCommandStage({ stage, ctx, workDir, logRoot, round = 0,
         `stage "${stage.id}" (run) exited ${r.status}: ${command}` +
         (output ? `\n${output.slice(-2000)}` : ""),
       kind: "run",
+      command,
+      code: r.status,
+      output: output.slice(-12000),
       raw: output.slice(-2000),
       rawPath,
       wallMs,
@@ -491,6 +557,8 @@ export async function runCommandStage({ stage, ctx, workDir, logRoot, round = 0,
         ok: false,
         error: `stage "${stage.id}" (run): ${p.error}`,
         kind: "parse",
+        command,
+        output: output.slice(-12000),
         raw: stdout.slice(-2000),
         rawPath,
         wallMs,
@@ -505,6 +573,8 @@ export async function runCommandStage({ stage, ctx, workDir, logRoot, round = 0,
       ok: false,
       error: `stage "${stage.id}" (run) broke its declared shape: ${shapeProblems.join("; ")}`,
       kind: "shape",
+      command,
+      output: output.slice(-12000),
       raw: JSON.stringify(value).slice(0, 2000),
       rawPath,
       wallMs,
@@ -514,7 +584,17 @@ export async function runCommandStage({ stage, ctx, workDir, logRoot, round = 0,
   // No `telemetry` row on purpose: there is no model call to price. A run stage is
   // free, and inventing a zero-cost row would put it in the per-stage cost table as
   // though it had been billed and merely come back cheap.
-  return { ok: true, value, rawPath, wallMs, promptChars: command.length, sessionId: null };
+  return {
+    ok: true,
+    value,
+    command,
+    code: 0,
+    output: output.slice(-12000),
+    rawPath,
+    wallMs,
+    promptChars: command.length,
+    sessionId: null,
+  };
 }
 
 function randomId() {
@@ -526,6 +606,38 @@ function randomId() {
 
 export function selfTest() {
   const CASES = [];
+
+  const completionPrompt = composeStagePrompt(
+    { parse: "text", completion: { run: "pnpm check", max: 3 } },
+    "Do the work.",
+  );
+  CASES.push([
+    "the initial model prompt names its enforced completion command",
+    completionPrompt.includes("pnpm check") &&
+      completionPrompt.includes("Run it yourself") &&
+      completionPrompt.includes("maximum 3 attempt(s)"),
+  ]);
+  CASES.push([
+    "the initial completion instruction uses the rendered command",
+    composeStagePrompt(
+      { parse: "text", completion: { run: "pnpm test {{chunk.id}}", max: 2 } },
+      "Build it.",
+      null,
+      "pnpm test c7",
+    ).includes("pnpm test c7"),
+  ]);
+  const retryPrompt = composeStagePrompt({ parse: "text" }, "Repair.", {
+    command: "pnpm check",
+    attempt: 2,
+    max: 3,
+    tail: "Type error in src/a.ts",
+  });
+  CASES.push([
+    "deterministic failure feedback carries the exact command, bound, and output",
+    retryPrompt.includes("pnpm check") &&
+      retryPrompt.includes("Attempt: 2/3") &&
+      retryPrompt.includes("Type error in src/a.ts"),
+  ]);
 
   CASES.push(["bare JSON parses", extractJson('{"a":1}').value.a === 1]);
   CASES.push([

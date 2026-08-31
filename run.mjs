@@ -28,7 +28,7 @@ import {
   linearSlots,
 } from "./kernel/foreach.mjs";
 import { reduceCumulative } from "./kernel/cost.mjs";
-import { treeSnapshot, treeDelta } from "./kernel/tree.mjs";
+import { treeSnapshot, treeDelta, repositorySnapshot } from "./kernel/tree.mjs";
 
 const arg = (n, d) => {
   const i = process.argv.indexOf(`--${n}`);
@@ -70,6 +70,16 @@ if (errors.length) {
 
 const stages = resolveStages(chain);
 const byId = new Map(stages.map((s) => [s.id, s]));
+const gateSpec =
+  typeof chain.gate === "string"
+    ? { run: chain.gate, repair: null }
+    : chain.gate
+      ? {
+          run: chain.gate.run,
+          repair: chain.gate.repair || null,
+        }
+      : null;
+const gateRepairIds = new Set(gateSpec?.repair?.stages || []);
 const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
 const runId = `${chain.name}__${tag}__${stamp}`;
 // WHERE A RUN IS RECORDED. Beside the CHAIN, not beside the engine.
@@ -198,6 +208,16 @@ if (headProbe.code !== 0 || !/^[0-9a-f]{40}$/.test(baseSha)) {
   );
   process.exit(2);
 }
+if (chain.preflight) {
+  const command = render(chain.preflight.run, ctx);
+  const p = sh(command, workDir);
+  if (p.code !== 0) {
+    console.error(
+      `\n✗ PREFLIGHT: ${command}\n` + (p.out ? p.out.replace(/^/gm, "    ") : "    (no output)"),
+    );
+    process.exit(2);
+  }
+}
 // Only now that the run will actually proceed: a refused run must not leave a
 // directory behind, or `results/` fills with empty runs the canvas renders as live.
 mkdirSync(logRoot, { recursive: true });
@@ -220,7 +240,8 @@ writeFileSync(
       name: chain.name,
       tag,
       startedAt: new Date().toISOString(),
-      gate: chain.gate || null,
+      gate: gateSpec || null,
+      preflight: chain.preflight || null,
       loop: chain.loop || null,
       foreach: chain.foreach || null,
       workDir,
@@ -241,10 +262,12 @@ writeFileSync(
         produces: s.produces ?? null,
         parse: s.parse ?? "text",
         expects: s.expects ?? null,
+        completion: s.completion ?? null,
         inLoop: (chain.loop?.stages || []).includes(s.id),
         // Declared up front so the canvas can show "runs once per element" before
         // the element count is known -- N only exists once the producing stage ends.
         inForeach: (chain.foreach?.stages || []).includes(s.id),
+        inGateRepair: gateRepairIds.has(s.id),
       })),
     },
     null,
@@ -280,7 +303,7 @@ const snap = () => treeSnapshot(workDir);
 // driver knows the true order at the instant it calls, and writing one line costs
 // nothing -- so it writes it, live, rather than leaving the reader to infer it.
 let callSeq = 0;
-function journalCall(stage, round, iter) {
+function journalCall(stage, round, iter, attempt = 0) {
   callSeq += 1;
   try {
     appendFileSync(
@@ -290,6 +313,7 @@ function journalCall(stage, round, iter) {
         id: stage.id,
         iter,
         round,
+        attempt,
         at: new Date().toISOString(),
       }) + "\n",
     );
@@ -297,12 +321,13 @@ function journalCall(stage, round, iter) {
     /* the journal is an observability aid; never fail a run over it */
   }
 }
-async function execute(stage, round = 0, iter = 0) {
+async function executeOnce(stage, round = 0, iter = 0, attempt = 0, deterministicFailure = null) {
   const t0 = Date.now();
   const treeBefore = snap();
-  journalCall(stage, round, iter);
+  const repoBefore = repositorySnapshot(workDir);
+  journalCall(stage, round, iter, attempt);
   process.stdout.write(
-    `→ ${stage.id}${iter ? ` [${iter}]` : ""}${round ? ` (round ${round})` : ""} … ${stage.run ? `$ ${stage.run}` : stage.model}${stage.tools ? " +tools" : ""}${stage.resume ? " +resume" : ""}\n`,
+    `→ ${stage.id}${iter ? ` [${iter}]` : ""}${round ? ` (round ${round})` : ""}${attempt ? ` (completion attempt ${attempt + 1})` : ""} … ${stage.run ? `$ ${stage.run}` : stage.model}${stage.tools ? " +tools" : ""}${stage.resume ? " +resume" : ""}\n`,
   );
   const res = stage.run
     ? await runCommandStage({ stage, ctx, workDir, logRoot, round, iter })
@@ -314,15 +339,21 @@ async function execute(stage, round = 0, iter = 0) {
         logRoot,
         round,
         iter,
+        attempt,
+        deterministicFailure,
         sessions,
         maxCredits: arg("max-credits"),
       });
   if (res.telemetry) telemRows.push(res.telemetry);
   const filesChanged = treeDelta(treeBefore, snap());
+  const repoAfter = repositorySnapshot(workDir);
+  const repositoryChanged =
+    repoBefore.head !== repoAfter.head || repoBefore.status !== repoAfter.status;
   stageLog.push({
     id: stage.id,
     round,
     iter,
+    attempt,
     ok: res.ok,
     error: res.error || null,
     kind: res.kind || null,
@@ -332,7 +363,9 @@ async function execute(stage, round = 0, iter = 0) {
     tools: stage.tools,
     resume: stage.resume,
     expects: stage.expects,
+    completion: null,
     filesChanged,
+    repositoryChanged,
     sessionId: res.sessionId || null,
     promptChars: res.promptChars ?? null,
     wallMs: res.wallMs ?? Date.now() - t0,
@@ -354,16 +387,17 @@ async function execute(stage, round = 0, iter = 0) {
   // says. A `run` stage is exempt: writing IS its job, it carries no `tools` key at
   // all (validation rejects one), and its command is stated in the config in full --
   // so "what may this stage change" is answered by reading it, not by a flag.
-  if (!stage.run && !stage.tools && filesChanged.length) {
+  if (!stage.run && !stage.tools && repositoryChanged) {
     console.log(`   ✗ stage "${stage.id}" has tools: false but the tree changed`);
     halted = {
       stage: stage.id,
       round,
       iter,
       kind: "tools",
-      reason:
-        `stage "${stage.id}" is configured tools: false but ${filesChanged.length} file(s) ` +
-        `changed while it ran: ${filesChanged.slice(0, 10).join(", ")}`,
+      reason: filesChanged.length
+        ? `stage "${stage.id}" is configured tools: false but ${filesChanged.length} file(s) ` +
+          `changed while it ran: ${filesChanged.slice(0, 10).join(", ")}`
+        : `stage "${stage.id}" is configured tools: false but changed the repository index or HEAD`,
     };
     return false;
   }
@@ -451,6 +485,119 @@ async function execute(stage, round = 0, iter = 0) {
   return true;
 }
 
+// A MODEL TURN IS NOT COMPLETION. When a stage declares a deterministic
+// postcondition, the command -- not the model's claim -- decides whether that stage
+// may finish. A failure is fed back into the SAME stage and, when `resume: true`,
+// the same CLI session. This is deliberately generic: the kernel knows neither what
+// the command checks nor how the agent should repair it.
+async function execute(stage, round = 0, iter = 0, deterministicFailure = null) {
+  if (!stage.completion) return executeOnce(stage, round, iter, 0, deterministicFailure);
+
+  let previousFailure = deterministicFailure;
+  for (let attempt = 0; attempt < stage.completion.max; attempt++) {
+    const ok = await executeOnce(stage, round, iter, attempt, previousFailure);
+    if (!ok) return false;
+
+    const row = stageLog.at(-1);
+    const checkTreeBefore = snap();
+    const checkRepoBefore = repositorySnapshot(workDir);
+    const check = await runCommandStage({
+      stage: {
+        ...stage,
+        run: stage.completion.run,
+        parse: "text",
+        expects: null,
+        produces: null,
+      },
+      ctx,
+      workDir,
+      logRoot,
+      round,
+      iter,
+      attempt,
+    });
+    const checkFilesChanged = treeDelta(checkTreeBefore, snap());
+    const checkRepoAfter = repositorySnapshot(workDir);
+    const failureText = check.raw || check.error || "";
+    const outputText = check.ok ? String(check.value || "") : failureText;
+    const result = {
+      attempt: attempt + 1,
+      max: stage.completion.max,
+      command: check.command || stage.completion.run,
+      code: check.code ?? (check.ok ? 0 : null),
+      ok: check.ok,
+      tail: outputText.slice(-2000),
+      output: check.output || outputText.slice(-12000),
+      rawPath: check.rawPath || null,
+      wallMs: check.wallMs ?? null,
+      filesChanged: checkFilesChanged,
+    };
+    row.completion = result;
+
+    if (
+      checkFilesChanged.length ||
+      checkRepoBefore.head !== checkRepoAfter.head ||
+      checkRepoBefore.status !== checkRepoAfter.status
+    ) {
+      halted = {
+        stage: `${stage.id}.completion`,
+        round,
+        iter,
+        kind: "completion-mutated",
+        reason: checkFilesChanged.length
+          ? `stage "${stage.id}" completion command changed ${checkFilesChanged.length} file(s): ` +
+            checkFilesChanged.slice(0, 10).join(", ")
+          : `stage "${stage.id}" completion command changed the repository index or HEAD`,
+        completion: result,
+      };
+      console.log(`   ✗ ${stage.id} completion MUTATED the tree instead of judging it`);
+      return false;
+    }
+
+    if (check.ok) {
+      console.log(`   ✓ ${stage.id} completion clean`);
+      return true;
+    }
+
+    console.log(
+      `   ✗ ${stage.id} completion FAILED (attempt ${attempt + 1}/${stage.completion.max})`,
+    );
+    const signature = `${result.command}\n${result.tail}`;
+    if (previousFailure && previousFailure.signature === signature && !row.repositoryChanged) {
+      halted = {
+        stage: `${stage.id}.completion`,
+        round,
+        iter,
+        kind: "no-progress",
+        reason: `stage "${stage.id}" repeated the same completion failure without changing any files`,
+        completion: result,
+      };
+      return false;
+    }
+    if (attempt + 1 >= stage.completion.max) {
+      halted = {
+        stage: `${stage.id}.completion`,
+        round,
+        iter,
+        kind: "exhausted",
+        reason:
+          `stage "${stage.id}" did not satisfy its completion command after ` +
+          `${stage.completion.max} attempt(s): ${result.command}`,
+        completion: result,
+      };
+      return false;
+    }
+    previousFailure = {
+      ...result,
+      signature,
+      attempt: attempt + 2,
+      max: stage.completion.max,
+      context: "Your previous turn did not satisfy this stage's completion requirement.",
+    };
+  }
+  return false;
+}
+
 const loopIds = new Set(chain.loop?.stages || []);
 const fe = chain.foreach || null;
 const feIds = new Set(fe?.stages || []);
@@ -467,6 +614,8 @@ const feIds = new Set(fe?.stages || []);
 // Existing chains are unaffected: they declare their linear stages first, which is
 // still `pre`.
 const slots = linearSlots(stages, loopIds, feIds);
+for (const name of ["pre", "mid", "post"])
+  slots[name] = slots[name].filter((stage) => !gateRepairIds.has(stage.id));
 
 for (const stage of slots.pre) {
   if (halted) break;
@@ -688,9 +837,10 @@ for (const stage of slots.post) {
   await execute(stage);
 }
 let gate = null;
-if (chain.gate && !halted) {
-  console.log(`\n=== GATE (${chain.gate}) ===`);
-  const g = sh(chain.gate, workDir);
+function runFinalGate(attempt = 0) {
+  const command = gateSpec.run;
+  console.log(`\n=== GATE${attempt ? ` RETRY ${attempt}` : ""} (${command}) ===`);
+  const g = sh(command, workDir);
   const touched =
     g.code === 0
       ? []
@@ -699,8 +849,8 @@ if (chain.gate && !halted) {
           .map((x) => x.trim())
           .filter(Boolean);
   const blamed = touched.filter((f) => g.out.includes(f));
-  gate = {
-    command: chain.gate,
+  const measured = {
+    command,
     code: g.code,
     ok: g.code === 0,
     filesInDiff: blamed,
@@ -714,6 +864,58 @@ if (chain.gate && !halted) {
         ? `   ✗ gate FAILED in files this run wrote: ${blamed.join(", ")}`
         : "   ⚠ gate failed in NO file this run touched — inherited drift, not this run's",
   );
+  return measured;
+}
+
+if (gateSpec && !halted) {
+  gate = runFinalGate();
+
+  let previous = `${gate.code}\n${gate.tail}`;
+  for (
+    let attempt = 1;
+    !gate.ok && !halted && gateSpec.repair && attempt <= gateSpec.repair.max;
+    attempt++
+  ) {
+    const mark = stageLog.length;
+    console.log(`\n--- gate repair ${attempt}/${gateSpec.repair.max} ---`);
+    const gateFailure = {
+      ...gate,
+      attempt,
+      max: gateSpec.repair.max,
+      context: "The assembled repository failed its final deterministic gate.",
+    };
+    for (const id of gateSpec.repair.stages) {
+      if (!(await execute(byId.get(id), attempt, 0, gateFailure))) break;
+    }
+    if (halted) break;
+
+    const repositoryChanged = stageLog.slice(mark).some((row) => row.repositoryChanged);
+    gate = runFinalGate(attempt);
+    if (gate.ok) break;
+
+    const current = `${gate.code}\n${gate.tail}`;
+    if (current === previous && !repositoryChanged) {
+      halted = {
+        stage: "gate.repair",
+        round: attempt,
+        kind: "no-progress",
+        reason: "final gate repeated the same failure and its repair stages changed no files",
+        gate,
+      };
+      break;
+    }
+    previous = current;
+  }
+  if (!gate.ok && gateSpec.repair && !halted) {
+    halted = {
+      stage: "gate.repair",
+      round: gateSpec.repair.max,
+      kind: "exhausted",
+      reason:
+        `final gate remained red after ${gateSpec.repair.max} repair attempt(s): ` + gate.command,
+      gate,
+    };
+  }
 }
 
 const aiu = reduceCumulative(telemRows, "aiu");

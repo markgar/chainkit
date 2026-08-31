@@ -61,6 +61,17 @@ export function treeDelta(before, after) {
   return [...names].filter((n) => before.get(n) !== after.get(n)).sort();
 }
 
+// Identity for commands that are supposed to JUDGE the repository without changing
+// it. Unlike treeSnapshot(), this includes the index and HEAD: a command that edits
+// a file and stages or commits it can leave `git ls-files -m` empty while still
+// changing the repository.
+export function repositorySnapshot(workDir) {
+  return {
+    head: probe("git rev-parse HEAD", workDir).trim(),
+    status: probe("git status --porcelain=v1 -z --untracked-files=all", workDir),
+  };
+}
+
 export function selfTest() {
   const CASES = [];
   const dir = mkdtempSync(path.join(tmpdir(), "ck-tree-"));
@@ -72,6 +83,7 @@ export function selfTest() {
     run("git add -A && git commit -qm base");
 
     const base = treeSnapshot(dir);
+    const repoBase = repositorySnapshot(dir);
     CASES.push(["a clean tree observes nothing", base.size === 0]);
 
     // THE REGRESSION. An untracked new file is what a from-scratch builder produces,
@@ -88,6 +100,16 @@ export function selfTest() {
     CASES.push([
       "a modified tracked file is seen",
       treeDelta(added, treeSnapshot(dir)).includes("kept.txt"),
+    ]);
+    run("git add kept.txt");
+    CASES.push([
+      "repository identity sees a staged-only change",
+      repositorySnapshot(dir).status !== repoBase.status,
+    ]);
+    run("git commit -qm staged");
+    CASES.push([
+      "repository identity sees a commit even when the tree is clean",
+      repositorySnapshot(dir).head !== repoBase.head,
     ]);
 
     const before = treeSnapshot(dir);
