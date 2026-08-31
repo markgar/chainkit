@@ -44,6 +44,13 @@ export function parseCopilotJsonl(raw) {
   // whose final message began mid-word, with a closing fence and no opening one.
   let truncatedCalls = 0;
   let maxOutputTokens = null;
+  // The text of EVERY model call, in order. A turn that was cut off never emits
+  // an `assistant.message`, so its output exists only here -- and a cut-off
+  // answer is precisely the case where the model then CONTINUES in the next
+  // call. Keeping only the assistant messages therefore keeps only the last
+  // fragment of a long answer, which is how a complete, valid reply was
+  // discarded as unparseable while sitting whole in the log.
+  const callTexts = [];
 
   for (const e of events) {
     const t = e.type || "?";
@@ -58,8 +65,15 @@ export function parseCopilotJsonl(raw) {
     if (t === "session.usage_checkpoint" && e.data) usageCheckpoint = e.data;
 
     if (t === "model.model_call_success" && e.data) {
-      const reasons = e.data.responseChunk?.choices || [];
-      for (const c of reasons) if (c?.finish_reason === "length") truncatedCalls++;
+      const choice = e.data.responseChunk?.choices?.[0];
+      if (choice?.finish_reason === "length") truncatedCalls++;
+      const partial = choice?.delta?.content;
+      if (partial)
+        callTexts.push({
+          turn: e.data.turn ?? null,
+          text: String(partial),
+          truncated: choice?.finish_reason === "length",
+        });
       if (typeof e.data.maxOutputTokens === "number") maxOutputTokens = e.data.maxOutputTokens;
     }
 
@@ -186,6 +200,7 @@ export function parseCopilotJsonl(raw) {
     outputTokensTotal,
     truncatedCalls,
     maxOutputTokens,
+    callTexts,
     toolCallCount: toolCalls.length,
     reads,
     toolCallsByName,

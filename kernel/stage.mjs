@@ -54,6 +54,33 @@ function extractJson(text) {
   return { ok: false, error: "no parseable JSON in output" };
 }
 
+// Rebuild an answer that arrived in pieces.
+//
+// A response the provider CUT OFF at the output ceiling is continued in the next
+// call, and a truncated turn emits no assistant message -- so a long reply
+// reaches us as its final fragment only, beginning mid-word. Observed: a valid
+// 8-chunk plan spread over two calls, reported as unparseable while sitting
+// whole in the log.
+//
+// Try the trailing calls, shortest suffix first, and accept the first join that
+// parses. The parse is an ORACLE, which is what makes this safe: it recovers a
+// real answer or changes nothing, and cannot invent one. Blind concatenation
+// would not do -- in the motivating run an earlier cut-off call was an abandoned
+// attempt the model restarted rather than continued, and including it parses as
+// nothing at all.
+function stitchJson(callTexts) {
+  const calls = Array.isArray(callTexts) ? callTexts : [];
+  for (let i = calls.length - 2; i >= 0; i--) {
+    const joined = calls
+      .slice(i)
+      .map((c) => c?.text || "")
+      .join("");
+    const retry = extractJson(joined);
+    if (retry.ok) return { ok: true, value: retry.value, calls: calls.length - i };
+  }
+  return { ok: false };
+}
+
 // Read a dotted path off an artifact, e.g. "code-verdict.pass". Used by the loop's
 // `until`. A missing field is UNDEFINED, never false -- the caller decides what an
 // unanswerable condition means, because silently reading it as "not done" would
@@ -166,15 +193,32 @@ export async function runStage({
   }
 
   let value = r.text;
+  let recoveredFrom = 0;
   if (stage.parse === "json") {
     const p = extractJson(r.text);
-    if (!p.ok) {
-      // "No parseable JSON" is the symptom. When the provider told us it CUT THE
-      // RESPONSE OFF (`finish_reason: "length"`), that is the cause, and reporting
-      // only the symptom sends the reader to debug a prompt or a model's
-      // formatting when the real answer is "raise the ceiling or ask for less".
-      // Observed: a stage truncated at exactly its 32000-token limit twice, whose
-      // surviving text began mid-word and carried a closing fence with no opening.
+    stitch: if (!p.ok) {
+      // A cut-off answer is CONTINUED in the next call, so a long reply is spread
+      // across several calls while only the last reaches us as an assistant
+      // message -- a truncated turn emits none. Keeping only assistant messages
+      // therefore keeps only the final fragment, which is how a complete, valid
+      // reply was reported as unparseable while sitting whole in the log.
+      //
+      // So stitch the trailing calls back together, shortest suffix first, and
+      // accept the first join that parses. The parse IS the point: it is an
+      // oracle, so this either recovers a real answer or changes nothing, and it
+      // cannot invent one. Blind concatenation would not do -- in the run that
+      // motivated this, an earlier cut-off call was an abandoned attempt the
+      // model restarted rather than continued, and including it parses as nothing.
+      const st = stitchJson(r.telemetry?.callTexts);
+      if (st.ok) {
+        value = st.value;
+        recoveredFrom = st.calls;
+      }
+      if (recoveredFrom) break stitch;
+
+      // Nothing stitched. "No parseable JSON" is then the symptom, and when the
+      // provider said it cut the response off that is the cause -- reporting only
+      // the symptom sends the reader to debug a prompt or a model's formatting.
       const cut = r.telemetry?.truncatedCalls || 0;
       const why = cut
         ? `${p.error} — the model was cut off at the output limit${
@@ -191,7 +235,7 @@ export async function runStage({
         wallMs: Date.now() - started,
       };
     }
-    value = p.value;
+    if (!recoveredFrom) value = p.value;
   }
 
   const shapeProblems = checkShape(value, stage.expects);
@@ -210,6 +254,10 @@ export async function runStage({
   return {
     ok: true,
     value,
+    // A silent recovery is its own blind spot: the run would look ordinary while
+    // the answer had in fact arrived in pieces after hitting the output ceiling,
+    // which is a thing the operator should go fix rather than keep paying for.
+    recoveredFromCalls: recoveredFrom || undefined,
     telemetry: r.telemetry,
     rawPath: r.rawPath,
     promptChars: prompt.length,
@@ -384,6 +432,32 @@ export function selfTest() {
   CASES.push(["a JSON array parses", extractJson("[1,2,3]").value.length === 3]);
   CASES.push(["prose with no JSON fails", extractJson("no json here").ok === false]);
   CASES.push(["empty output fails", extractJson("").ok === false]);
+
+  // Reassembling a cut-off answer. The shapes here are taken from the real run
+  // that motivated it: an abandoned prose attempt, then the answer itself split
+  // across a cut-off call and its continuation.
+  const T = (text, truncated = false) => ({ text, truncated });
+  CASES.push([
+    "a reply split across a cut-off call is rejoined",
+    stitchJson([T('```json\n{"chunks":[1,2', true), T(",3]}\n```")]).value.chunks.length === 3,
+  ]);
+  CASES.push([
+    "the rejoin reports how many calls it took",
+    stitchJson([T('{"a":1', true), T("}")]).calls === 2,
+  ]);
+  // The one that makes blind concatenation wrong: an earlier cut-off call the
+  // model ABANDONED and restarted. Prepending it must not break the recovery.
+  CASES.push([
+    "an abandoned earlier attempt is skipped, not concatenated",
+    stitchJson([T("I will now write {the plan", true), T('{"a":1', true), T("}")]).value.a === 1,
+  ]);
+  // The safety property: no stitching can invent an answer.
+  CASES.push([
+    "calls with no JSON anywhere recover nothing",
+    stitchJson([T("hello", true), T(" world")]).ok === false,
+  ]);
+  CASES.push(["a single call has no suffix to stitch", stitchJson([T('{"a":1}')]).ok === false]);
+  CASES.push(["no calls at all is not an error", stitchJson(undefined).ok === false]);
   // Malformed JSON must FAIL, not half-parse into something plausible.
   CASES.push(["malformed JSON fails", extractJson('{"a": }').ok === false]);
 

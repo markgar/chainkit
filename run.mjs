@@ -330,6 +330,7 @@ async function execute(stage, round = 0, iter = 0) {
     promptChars: res.promptChars ?? null,
     wallMs: res.wallMs ?? Date.now() - t0,
     rawPath: res.rawPath || null,
+    recoveredFromCalls: res.recoveredFromCalls ?? null,
   });
 
   // A MODEL stage configured WITHOUT tools cannot write, so the designer canvas
@@ -371,7 +372,12 @@ async function execute(stage, round = 0, iter = 0) {
   const summary = summarize(res.value);
   const touched = filesChanged.length ? `, ✎ ${filesChanged.length} file(s)` : ", ✎ none";
   const produced = stage.produces ? `${stage.produces} ← ${summary}` : `(no artifact)`;
-  console.log(`   ✓ ${produced}${touched}  [${Math.round((res.wallMs || 0) / 1000)}s]`);
+  // Say so when the answer had to be reassembled. It means the stage hit its
+  // output ceiling and only just survived, which is a thing to go fix.
+  const stitched = res.recoveredFromCalls
+    ? `, ⚠ reassembled from ${res.recoveredFromCalls} cut-off calls`
+    : "";
+  console.log(`   ✓ ${produced}${touched}${stitched}  [${Math.round((res.wallMs || 0) / 1000)}s]`);
   return true;
 }
 
