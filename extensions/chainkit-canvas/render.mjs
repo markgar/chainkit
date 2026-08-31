@@ -60,6 +60,8 @@ export function page() {
               border: 1px solid currentColor; }
   .runstate.live, .runstate.delivered { color: var(--ok); }
   .runstate.failed, .runstate.halted { color: var(--bad); }
+  .runsummary { min-width: 0; color: var(--muted); font-size: 12px; font-weight: 400;
+                overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .25 } }
   .cards { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0 6px; }
   .card { border: 1px solid var(--border-color-default, #d0d7de); border-radius: 8px;
@@ -215,7 +217,7 @@ export function page() {
 </head>
 <body>
   <div id="top">
-    <h1><span id="dot" class="dot"></span> chainkit<span id="tagname" style="color:var(--muted);font-weight:400"></span><span id="runstate" class="runstate"></span></h1>
+    <h1><span id="dot" class="dot"></span> chainkit<span id="tagname" style="color:var(--muted);font-weight:400"></span><span id="runstate" class="runstate"></span><span id="runsummary" class="runsummary"></span></h1>
     <div class="sub"><select id="runs"></select></div>
     <div id="warn"></div>
     <div id="cards" class="cards"></div>
@@ -369,6 +371,9 @@ function render(s) {
   const stateEl = document.getElementById("runstate");
   stateEl.className = "runstate " + state;
   stateEl.textContent = state === "live" ? "LIVE" : state === "delivered" ? "DELIVERED" : state === "halted" ? "HALTED" : state === "failed" ? "FAILED" : "IDLE";
+  const summaryEl = document.getElementById("runsummary");
+  summaryEl.textContent = run?.headline || "";
+  summaryEl.title = run?.headline || "";
   // Three panels of the same canvas are otherwise indistinguishable.
   const tagName = pinned && pinned.startsWith("tag:") ? pinned.slice(4) : (run ? (run.id.split("__")[1] || "") : "");
   document.getElementById("tagname").textContent = tagName ? " · " + tagName : "";

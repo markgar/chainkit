@@ -164,6 +164,60 @@ export function runState(summary, live) {
   return "failed";
 }
 
+function gateFailure(tail) {
+  const lines = String(tail || "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  for (let i = 0; i < lines.length; i++) {
+    const heading = /^Unused exported (types|functions|classes|interfaces|enums) \(\d+\)$/i.exec(
+      lines[i],
+    );
+    if (heading && lines[i + 1]) {
+      const name = lines[i + 1].split(/\s+/)[0];
+      const kind = heading[1].replace(/s$/, "");
+      return `unused exported ${kind} ${name}`;
+    }
+  }
+  const actionable = lines.find(
+    (line) =>
+      /\berror TS\d+\b/i.test(line) ||
+      /^FAIL\b/.test(line) ||
+      /^Error:/.test(line) ||
+      /\btests? failed\b/i.test(line),
+  );
+  return actionable ? actionable.replace(/^.*?\/(?=[^/]+\/[^/]+:\d)/, "") : "";
+}
+
+// One sentence beside the terminal badge: enough outcome to distinguish "the
+// process failed immediately" from "it built everything and the final judge found
+// one remaining issue". It is derived only from recorded facts.
+export function runHeadline(summary, unit = "element") {
+  if (!summary) return "";
+  const iterations = Array.isArray(summary.foreach?.iterations) ? summary.foreach.iterations : [];
+  const count = Number(summary.foreach?.count ?? iterations.length);
+  const passed = iterations.filter((iteration) => iteration.gate?.ok === true).length;
+  const noun = count === 1 ? unit : `${unit}s`;
+  const progress = count
+    ? `Completed ${count}/${count} ${noun}; ${passed}/${count} gates passed`
+    : "";
+
+  if (summary.delivered === true) {
+    return progress
+      ? `${progress}, and the final gate passed.`
+      : "Delivered; the final gate passed.";
+  }
+  if (summary.halted) {
+    const where = summary.halted.stage ? ` at ${summary.halted.stage}` : "";
+    return `Stopped${where}: ${summary.halted.reason || summary.halted.kind || "the run halted"}.`;
+  }
+  if (summary.gate?.ok === false) {
+    const reason = gateFailure(summary.gate.tail);
+    return `${progress ? `${progress}, but t` : "T"}he final gate failed${reason ? `: ${reason}` : ""}.`;
+  }
+  return progress ? `${progress}, but the run was not delivered.` : "Finished without delivery.";
+}
+
 function parseJsonl(file) {
   let raw;
   try {
@@ -1021,6 +1075,7 @@ export function readRun(runDir, root) {
   };
 
   const live = !summary && (all.some((c) => c.inFlight) || Date.now() - newest < 90_000);
+  const unit = (plan?.foreach?.as || "").trim() || "element";
   return {
     id: base,
     stages,
@@ -1036,13 +1091,14 @@ export function readRun(runDir, root) {
     // already declares one, in `foreach.as`, and that binding is exactly what the
     // prompts read as {{chunk.id}}. Repeat the chain's word; fall back to the
     // generic one only when a chain did not say.
-    unit: (plan?.foreach?.as || "").trim() || "element",
+    unit,
     // Prefer the REAL signal: a .live.jsonl exists only while its call's process
     // is running, so an in-flight call is proof the run is alive. The mtime
     // window is the fallback for the gaps between calls (gate, install, diff),
     // where no model process is writing anything.
     live,
     state: runState(summary, live),
+    headline: runHeadline(summary, unit),
     updatedAt: newest,
   };
 }

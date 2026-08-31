@@ -14,7 +14,14 @@
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { readRun, listRuns, describeTool, annotateConcurrency, runState } from "./telemetry.mjs";
+import {
+  readRun,
+  listRuns,
+  describeTool,
+  annotateConcurrency,
+  runState,
+  runHeadline,
+} from "./telemetry.mjs";
 import { page } from "./render.mjs";
 import vm from "node:vm";
 
@@ -842,6 +849,38 @@ rmSync(root, { recursive: true, force: true });
   );
   eq("the sticky header carries the terminal state", html.includes('id="runstate"'), true);
   eq("terminal failure changes the whole header", html.includes("#top.failed"), true);
+  eq(
+    "a failed full build says how far it got and why",
+    runHeadline(
+      {
+        delivered: false,
+        foreach: {
+          count: 4,
+          iterations: [
+            { gate: { ok: true } },
+            { gate: { ok: true } },
+            { gate: { ok: true } },
+            { gate: { ok: true } },
+          ],
+        },
+        gate: {
+          ok: false,
+          tail: "Unused exported types (1)\nFinishedScheduleEntry  type  apps/server/src/site/schedule/memo.ts:4:13",
+        },
+      },
+      "chunk",
+    ),
+    "Completed 4/4 chunks; 4/4 gates passed, but the final gate failed: unused exported type FinishedScheduleEntry.",
+  );
+  eq(
+    "a halt says where and why",
+    runHeadline(
+      { delivered: false, halted: { stage: "fix-review", reason: "repair list reopened F1" } },
+      "chunk",
+    ),
+    "Stopped at fix-review: repair list reopened F1.",
+  );
+  eq("the one-line outcome sits beside the badge", html.includes('id="runsummary"'), true);
 
   // ONE SCROLLING REGION, NOT A SCROLLING PAGE. The run totals must stay on screen
   // while the chain is scrolled -- they are what a stage's numbers get compared
