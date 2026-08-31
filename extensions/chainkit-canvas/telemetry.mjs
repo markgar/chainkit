@@ -632,6 +632,13 @@ export function readRun(runDir, root) {
         outputCeiling: rounds.find((r2) => r2.outputCeiling)?.outputCeiling ?? null,
         tools: rounds.reduce((n, r2) => n + r2.toolCount, 0),
         unmetered: rounds.filter((r2) => !r2.metered).length,
+        // NOTHING REPORTED IS NOT ZERO. The CLI emits usage only when a call
+        // finishes, so an in-flight stage has no cost figure yet. Summing that to 0
+        // and showing "0.00 AiU" states a measurement nobody made -- it read as a
+        // stage doing 41 tool calls for free, when the real answer, minutes later,
+        // was 58.83 AiU. Every call unmetered and nothing totalled means the number
+        // is absent, which is a different claim from free.
+        aiuKnown: !(rounds.every((r2) => !r2.metered) && !rounds.some((r2) => r2.aiu)),
         // Prefer the model the run DECLARED. A stage that has not produced an
         // assistant message yet has no observed model, and blank is the wrong answer
         // to "which model is this" -- the config already said.

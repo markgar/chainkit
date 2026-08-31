@@ -518,6 +518,45 @@ rmSync(root, { recursive: true, force: true });
     rmSync(live, { recursive: true, force: true });
   }
 
+  // AN ABSENT COST IS NOT A ZERO COST. A stage still running has reported no usage
+  // yet, and "0.00 AiU" beside 41 tool calls reads as work done for free. The real
+  // figure for the call that prompted this was 58.83 AiU, minutes later.
+  {
+    const c = mkdtempSync(path.join(tmpdir(), "ck-cost-"));
+    const cid = "c__cost__2026-01-01T00-00-00";
+    const cdir = path.join(c, "results", "chain-runs", "logs", cid);
+    mkdirSync(path.join(cdir, "01-live"), { recursive: true });
+    mkdirSync(path.join(cdir, "02-done"), { recursive: true });
+    // In flight: tool calls, an assistant message, and no usage checkpoint at all.
+    writeFileSync(
+      path.join(cdir, "01-live", "live.jsonl"),
+      [
+        { type: "tool.execution_start", data: { toolCallId: "a", toolName: "view" } },
+        { type: "tool.execution_complete", data: { toolCallId: "a", success: true } },
+        { type: "assistant.message", data: { model: "m", outputTokens: 10, content: "…" } },
+      ]
+        .map((l) => JSON.stringify(l))
+        .join("\n"),
+    );
+    writeFileSync(
+      path.join(cdir, "02-done", "done.jsonl"),
+      [
+        { type: "assistant.message", data: { model: "m", outputTokens: 10, content: "ok" } },
+        { type: "session.usage_checkpoint", data: { totalNanoAiu: 7e9 } },
+        { type: "result", data: {} },
+      ]
+        .map((l) => JSON.stringify(l))
+        .join("\n"),
+    );
+    const cr = readRun(cdir, c);
+    const S = (id) => cr.stages.find((s) => s.id === id);
+    eq("a stage that has reported no usage says so", S("live").aiuKnown, false);
+    eq("and it is not claimed to have cost zero", S("live").aiu, 0);
+    eq("a stage that reported usage is known", S("done").aiuKnown, true);
+    eq("and carries the real figure", S("done").aiu, 7);
+    rmSync(c, { recursive: true, force: true });
+  }
+
   rmSync(r, { recursive: true, force: true });
 }
 
