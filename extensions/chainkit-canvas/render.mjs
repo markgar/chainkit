@@ -146,6 +146,27 @@ export function page() {
   .grow { flex: 1; }
   .steps { padding: 4px 0; display: none; }
   .call.open .steps { display: block; }
+  .prompt { margin: 3px 10px 7px; border: 1px solid var(--border-color-muted, #d8dee4);
+            border-radius: 6px; background: rgba(127,127,127,.08); color: inherit; }
+  .prompt summary { cursor: pointer; padding: 6px 8px; color: var(--muted);
+                    font-size: 11px; font-weight: 600; }
+  .prompt-body { max-height: 420px; padding: 8px 10px; overflow: auto;
+                 border-top: 1px solid var(--border-color-muted, #d8dee4);
+                 color: inherit; font-size: 12px; line-height: 1.5; }
+  .prompt-body > :first-child { margin-top: 0; }
+  .prompt-body > :last-child { margin-bottom: 0; }
+  .prompt-body h1, .prompt-body h2, .prompt-body h3,
+  .prompt-body h4, .prompt-body h5, .prompt-body h6 {
+    margin: 12px 0 5px; line-height: 1.25;
+  }
+  .prompt-body h1 { font-size: 17px; } .prompt-body h2 { font-size: 15px; }
+  .prompt-body h3 { font-size: 13px; }
+  .prompt-body p { margin: 7px 0; }
+  .prompt-body ul, .prompt-body ol { margin: 7px 0; padding-left: 22px; }
+  .prompt-body pre { margin: 7px 0; padding: 8px 10px; overflow: auto;
+                     border-radius: 6px; background: rgba(127,127,127,.1);
+                     white-space: pre; }
+  .prompt-body pre code { font: 11px/1.5 var(--font-mono, "SFMono-Regular", Consolas, monospace); }
   .step { display: flex; gap: 8px; padding: 2px 10px 2px 14px; align-items: baseline; }
   /* Why the run stopped, stated once at the top rather than left in the JSON. */
   .halt { margin: 8px 10px; padding: 8px 10px; border-left: 3px solid var(--bad, #cf222e);
@@ -349,6 +370,72 @@ const sayHtml = (t) =>
     .replace(/^(#{1,6})\\s+(.*)$/gm, (_m, _h, s) => '<b class="mdh">' + s + "</b>")
     .replace(/\\*\\*([^*\\n]+)\\*\\*/g, "<strong>$1</strong>")
     .replace(/\\x60([^\\x60\\n]+)\\x60/g, "<code>$1</code>");
+
+// Full prompts need block Markdown, not the compact inline treatment used for
+// short agent messages. Parse only a deliberately small, safe subset after escaping:
+// headings, paragraphs, lists, fenced code, bold, and inline code.
+const promptMarkdownHtml = (text) => {
+  const lines = String(text ?? "").replace(/\\r\\n?/g, "\\n").split("\\n");
+  const out = [];
+  let paragraph = [];
+  let list = null;
+  let fence = null;
+  const flushParagraph = () => {
+    if (!paragraph.length) return;
+    out.push("<p>" + paragraph.map(sayHtml).join(" ") + "</p>");
+    paragraph = [];
+  };
+  const flushList = () => {
+    if (!list) return;
+    out.push("<" + list.tag + ">" + list.items.map((item) => "<li>" + sayHtml(item) + "</li>").join("") + "</" + list.tag + ">");
+    list = null;
+  };
+  for (const line of lines) {
+    if (fence) {
+      if (/^\\x60{3}/.test(line)) {
+        out.push('<pre><code class="language-' + esc(fence.lang) + '">' + esc(fence.body.join("\\n")) + "</code></pre>");
+        fence = null;
+      } else fence.body.push(line);
+      continue;
+    }
+    const fenced = /^\\x60{3}\\s*([^\\s]*)/.exec(line);
+    if (fenced) {
+      flushParagraph();
+      flushList();
+      fence = { lang: fenced[1] || "", body: [] };
+      continue;
+    }
+    const heading = /^(#{1,6})\\s+(.*)$/.exec(line);
+    if (heading) {
+      flushParagraph();
+      flushList();
+      const level = heading[1].length;
+      out.push("<h" + level + ">" + sayHtml(heading[2]) + "</h" + level + ">");
+      continue;
+    }
+    const bullet = /^\\s*[-*+]\\s+(.*)$/.exec(line);
+    const numbered = /^\\s*\\d+[.)]\\s+(.*)$/.exec(line);
+    if (bullet || numbered) {
+      flushParagraph();
+      const tag = bullet ? "ul" : "ol";
+      if (list && list.tag !== tag) flushList();
+      if (!list) list = { tag, items: [] };
+      list.items.push((bullet || numbered)[1]);
+      continue;
+    }
+    if (!line.trim()) {
+      flushParagraph();
+      flushList();
+      continue;
+    }
+    flushList();
+    paragraph.push(line.trim());
+  }
+  if (fence) out.push("<pre><code>" + esc(fence.body.join("\\n")) + "</code></pre>");
+  flushParagraph();
+  flushList();
+  return out.join("");
+};
 const stepHtml = (x, truncated) =>
   x.kind === "say"
     ? \`<div class="say\${truncated ? " cut-body" : ""}">\${sayHtml(sayText(x.text))}</div>\`
@@ -414,6 +501,7 @@ const jsonHtml = (v, depth) => {
 // One call open at a time. A null openKey means "follow the newest call", which is
 // what makes a live run watchable without clicking; any manual click pins that call.
 let openKey = null;
+const openPrompts = new Set();
 // null means "whatever this canvas was OPENED with" -- the server knows, the
 // client does not until it asks. Hardcoding "latest" here silently overrode the
 // run id a canvas was opened with, so three canvases opened on three different
@@ -746,6 +834,14 @@ function render(s) {
       </div>\`).join("")}</div>\`;
   }
 
+  function promptHtml(call, key) {
+    if (!call.prompt) return "";
+    return \`<details class="prompt" data-prompt-key="\${esc(key)}"\${openPrompts.has(key) ? " open" : ""}>
+      <summary>Prompt sent · \${call.prompt.length.toLocaleString()} characters</summary>
+      <div class="prompt-body">\${promptMarkdownHtml(call.prompt)}</div>
+    </details>\`;
+  }
+
   // GROUP HEADERS. With a fan-out the rows are element-major -- everything for
   // element 1, then element 2 -- and a flat list of 12 rows hides that structure.
   // A header is emitted whenever the element changes, so the block boundaries are
@@ -833,7 +929,7 @@ function render(s) {
               ? \`<span class="detail">\${p.toolCount} tools · \${p.aiu == null ? "AiU not reported yet" : p.aiu.toFixed(2) + " AiU"}</span>\`
               : \`<span class="detail">\${p.aiu == null ? "AiU not reported yet" : ""}</span>\`}
           </button>
-          <div id="\${esc(panelId)}" class="steps" style="--toolw:\${toolw}">\${out}\${steps}</div>
+          <div id="\${esc(panelId)}" class="steps" style="--toolw:\${toolw}">\${promptHtml(p, key)}\${out}\${steps}</div>
         </div>\`;
       }).join("")}
     </div>\`).join("");
@@ -844,6 +940,13 @@ function render(s) {
       // Clicking the open call collapses it and hands follow-the-newest back.
       openKey = k === activeKey ? null : k;
       render(s);
+    };
+  }
+  for (const details of document.querySelectorAll("details.prompt")) {
+    details.ontoggle = () => {
+      const key = details.dataset.promptKey;
+      if (details.open) openPrompts.add(key);
+      else openPrompts.delete(key);
     };
   }
 }

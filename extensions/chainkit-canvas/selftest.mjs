@@ -44,6 +44,14 @@ const write = (dir, file, lines) => {
 // Stage 1: prose output, a failed tool, and TWO cumulative usage checkpoints.
 write("01-plan", "plan.jsonl", [
   {
+    type: "user.message",
+    data: { content: "## Exact prompt\n\n- preserve **this**\n- escape <script>alert(1)</script>" },
+  },
+  {
+    type: "user.message",
+    data: { content: "A later user message must not replace the sent prompt." },
+  },
+  {
     type: "tool.execution_start",
     data: { toolCallId: "a", toolName: "view", arguments: { path: "src/x.ts" }, model: "model-a" },
   },
@@ -279,6 +287,11 @@ eq(
 );
 eq("the echoed json say-step is dropped", s2.rounds[0].steps.length, 0);
 eq("prose output is not treated as structured", s1.rounds[0].output, undefined);
+eq(
+  "the exact first sent prompt reaches the call",
+  s1.rounds[0].prompt,
+  "## Exact prompt\n\n- preserve **this**\n- escape <script>alert(1)</script>",
+);
 
 eq("tool status survives", s1.rounds[0].steps.filter((x) => x.status === "failed").length, 1);
 eq(
@@ -1512,6 +1525,22 @@ rmSync(root, { recursive: true, force: true });
     true,
   );
   eq(
+    "each model call can disclose the exact prompt sent",
+    html.includes('<details class="prompt" data-prompt-key="${esc(key)}"') &&
+      html.includes("Prompt sent · ${call.prompt.length.toLocaleString()} characters") &&
+      html.includes('<div class="prompt-body">${promptMarkdownHtml(call.prompt)}</div>'),
+    true,
+  );
+  eq(
+    "open prompt disclosures survive live redraws",
+    html.includes("const openPrompts = new Set()") &&
+      html.includes('openPrompts.has(key) ? " open" : ""') &&
+      html.includes('document.querySelectorAll("details.prompt")') &&
+      html.includes("openPrompts.add(key)") &&
+      html.includes("openPrompts.delete(key)"),
+    true,
+  );
+  eq(
     "adjacent parallel groups get one dense spacing break",
     html.includes(".step.pgrp-end + .step.pgrp-start { margin-top: 4px; }"),
     true,
@@ -1768,6 +1797,45 @@ rmSync(root, { recursive: true, force: true });
     "an unmatched asterisk is left alone",
     sayHtml("2 * 3 and **real** bold"),
     "2 * 3 and <strong>real</strong> bold",
+  );
+
+  const promptFrom = src.indexOf("const promptMarkdownHtml =");
+  const promptDecl = src.slice(promptFrom, src.indexOf("\n};", promptFrom) + 3);
+  const promptCtx = { out: null, esc: hCtx.esc, sayHtml };
+  vm.createContext(promptCtx);
+  new vm.Script(promptDecl + "\nout = promptMarkdownHtml;").runInContext(promptCtx);
+  const promptMarkdownHtml = promptCtx.out;
+  const ticks = String.fromCharCode(96).repeat(3);
+  eq(
+    "prompt Markdown preserves safe block structure",
+    promptMarkdownHtml(
+      [
+        "## Title",
+        "",
+        "**Bold** and " + String.fromCharCode(96) + "code" + String.fromCharCode(96),
+        "",
+        "- one",
+        "- two",
+        "",
+        ticks + "js",
+        "const ok = true;",
+        ticks,
+      ].join("\n"),
+    ),
+    '<h2>Title</h2><p><strong>Bold</strong> and <code>code</code></p><ul><li>one</li><li>two</li></ul><pre><code class="language-js">const ok = true;</code></pre>',
+  );
+  eq(
+    "prompt Markdown escapes HTML and fence-language injection",
+    promptMarkdownHtml(
+      [
+        '<img src=x onerror="alert(1)">',
+        "",
+        ticks + '"><script>',
+        "<script>alert(2)</script>",
+        ticks,
+      ].join("\n"),
+    ),
+    '<p>&lt;img src=x onerror=&quot;alert(1)&quot;&gt;</p><pre><code class="language-&quot;&gt;&lt;script&gt;">&lt;script&gt;alert(2)&lt;/script&gt;</code></pre>',
   );
 
   // The container renderer, also EXECUTED. It calls sayHtml on leaves, so the
