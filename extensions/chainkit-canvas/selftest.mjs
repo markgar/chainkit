@@ -60,6 +60,10 @@ write("01-plan", "plan.jsonl", [
   { type: "session.usage_checkpoint", data: { totalNanoAiu: 5e9 } },
   { type: "result", data: {} },
 ]);
+writeFileSync(
+  path.join(runDir, "01-plan", "plan.argv.jsonl"),
+  JSON.stringify({ sessionId: "s-plan" }, null, 2),
+);
 write("06-current-only", "current-only.jsonl", [
   {
     type: "model.model_call_success",
@@ -79,7 +83,7 @@ write("02-review", "review.jsonl", [
       content: '{"pass":false,"blocking":[{"file":"a.ts"}]}',
     },
   },
-  { type: "session.usage_checkpoint", data: { totalNanoAiu: 2e9 } },
+  { type: "session.usage_checkpoint", data: { totalNanoAiu: 7e9 } },
   { type: "result", data: {} },
 ]);
 write("02-review", "review.r1.jsonl", [
@@ -87,9 +91,24 @@ write("02-review", "review.r1.jsonl", [
     type: "assistant.message",
     data: { model: "model-b", outputTokens: 100, content: '{"pass":true}' },
   },
-  { type: "session.usage_checkpoint", data: { totalNanoAiu: 1e9 } },
+  { type: "session.usage_checkpoint", data: { totalNanoAiu: 8e9 } },
   { type: "result", data: {} },
 ]);
+writeFileSync(
+  path.join(runDir, "02-review", "review.argv.jsonl"),
+  JSON.stringify(
+    {
+      sessionId: "s-plan",
+      resumedFrom: { stage: "plan", sessionId: "s-plan", callSeq: 1, iter: 0, round: 0 },
+    },
+    null,
+    2,
+  ),
+);
+writeFileSync(
+  path.join(runDir, "02-review", "review.r1.argv.jsonl"),
+  JSON.stringify({ sessionId: "s-plan" }, null, 2),
+);
 // Stage 3: a name no allow-list could contain, and NO usage checkpoint at all.
 write("03-nobody-has-ever-seen-this", "nobody-has-ever-seen-this.jsonl", [
   {
@@ -135,11 +154,20 @@ writeFileSync(
         id: "review",
         round: 0,
         filesChanged: ["src/a.ts"],
-        sessionId: "s-rev",
-        resume: "plan",
+        sessionId: "s-plan",
+        resumeFrom: "plan",
+        resumed: true,
+        resumedFrom: { stage: "plan", sessionId: "s-plan", callSeq: 1, iter: 0, round: 0 },
         expects: { pass: "boolean" },
       },
-      { id: "review", round: 1, filesChanged: ["src/b.ts"], sessionId: "s-rev", resume: "plan" },
+      {
+        id: "review",
+        round: 1,
+        filesChanged: ["src/b.ts"],
+        sessionId: "s-plan",
+        resumeFrom: "plan",
+        resumed: true,
+      },
     ],
     artifactHistory: [
       { name: "verdict", by: "review", round: 0, value: { pass: false } },
@@ -164,7 +192,15 @@ writeFileSync(
         parse: "text",
         completion: { run: "pnpm check", max: 3 },
       },
-      { id: "review", ord: 2, model: "model-b", tools: false, produces: "verdict", parse: "json" },
+      {
+        id: "review",
+        ord: 2,
+        model: "model-b",
+        tools: false,
+        resumeFrom: "plan",
+        produces: "verdict",
+        parse: "json",
+      },
       {
         id: "nobody-has-ever-seen-this",
         ord: 3,
@@ -267,12 +303,11 @@ eq(
 );
 eq("a stage that wrote nothing reports an empty list, not undefined", s1.filesChanged, []);
 eq("a stage that inherited nothing says so", s1.resume, null);
-// The round that OPENED a session did not inherit it -- the config flag is true of
-// every round, but round 1 has no previous conversation to continue. Reporting the
-// flag verbatim made the first round of every resumed stage claim a handoff that
-// cannot exist. Both directions pinned, since asserting only the negative would be
-// satisfied by never reporting a resume at all.
-eq("the round that opened a session did not inherit one", s2.resume, null);
+// A cross-stage target inherits on its first call; a later round on the same session
+// remains resumed. Both directions are pinned because they come from different read
+// paths: explicit provenance for the first, legacy session-id inference for the next.
+eq("a cross-stage first call reports the source it inherited", s2.resume, "plan");
+eq("cross-stage provenance names the exact source session", s2.resumedFrom.sessionId, "s-plan");
 eq("a later round on that same session did", s2b.resume, "plan");
 eq("the declared contract is surfaced", Object.keys(s2.expects || {}), ["pass"]);
 eq(
@@ -1084,7 +1119,7 @@ rmSync(root, { recursive: true, force: true });
   eq("it sits with the other stage facts", /if \(rsm\) bits\.push\(rsm\)/.test(html), true);
   eq(
     "it names the stage with the chain's own word",
-    html.includes("previous ${st.id} context"),
+    html.includes("resumes ${esc(source)} context"),
     true,
   );
 

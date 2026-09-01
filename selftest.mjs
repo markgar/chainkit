@@ -14,6 +14,7 @@ import { selfTest as costTests } from "./kernel/cost.mjs";
 import { selfTest as foreachTests } from "./kernel/foreach.mjs";
 import { selfTest as modelTests } from "./kernel/models.mjs";
 import { selfTest as telemetryTests } from "./kernel/telemetry.mjs";
+import { selfTest as sessionTests } from "./kernel/session.mjs";
 
 // Copied suites print their own output and return a boolean; kernel suites return
 // [label, ok] pairs. Normalise rather than rewriting a suite that already passes --
@@ -39,6 +40,7 @@ const SUITES = [
   // Added when a real run halted on "no parseable JSON" while the log said
   // plainly `finish_reason: "length"`. The signal existed; nothing read it.
   ["telemetry parsing", telemetryTests],
+  ["session lineage", sessionTests],
   ["cost accounting (copied, self-printing)", () => [["cost aggregation", costTests() === true]]],
 ];
 

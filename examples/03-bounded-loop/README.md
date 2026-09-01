@@ -51,9 +51,9 @@ A reviewer that never passes is the failure mode that spends without limit, and 
 
 Hitting the bound is recorded as an **unsatisfied** loop, so a run that thrashed to its limit is distinguishable from one that converged on round two. Chain completion may still measure the final tree, but an unsatisfied loop blocks delivery.
 
-## `resume: true`
+## `resumeFrom: code`
 
-The fix stage continues the builder's own session rather than starting a fresh one, so it keeps context it has already paid for and the re-sent input is served as cache-read. Over three rounds that is the difference between one conversation and three cold starts.
+The fix stage continues the builder's session rather than starting a fresh one. It sends only the new review findings; the original spec, repository discovery, tool results, and build answer are already in the conversation. Because `code` runs once before the loop, every fix round deterministically resumes that same top-level session.
 
 ## What it cannot do
 

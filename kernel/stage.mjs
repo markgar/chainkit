@@ -23,8 +23,9 @@
 import path from "node:path";
 import { readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { complete, lastErrorLine } from "./providers.mjs";
+import { complete, lastErrorLine, providerFor } from "./providers.mjs";
 import { render, readPath } from "./context.mjs";
+import { makeSessionLedger, selectSession } from "./session.mjs";
 
 function renderCompletionPreview(template, ctx, produced) {
   if (!produced) return render(template, ctx);
@@ -290,9 +291,10 @@ function selectStagePrompt({
   deterministicFailure = null,
   completionCommand = stage.completion?.run,
   continued = false,
+  crossStageAdoption = false,
   attempt = 0,
 }) {
-  if (stage.resume && continued && deterministicFailure) {
+  if (continued && deterministicFailure) {
     return {
       prompt: completionContinuation(
         stage,
@@ -302,7 +304,7 @@ function selectStagePrompt({
       promptMode: "completion-continuation",
     };
   }
-  if (stage.resume && continued && !deterministicFailure && resumeTemplate != null) {
+  if (continued && !deterministicFailure && resumeTemplate != null) {
     return { prompt: render(resumeTemplate, ctx), promptMode: "round-continuation" };
   }
   const prompt = composeStagePrompt(
@@ -311,6 +313,7 @@ function selectStagePrompt({
     deterministicFailure,
     completionCommand,
   );
+  if (crossStageAdoption) return { prompt, promptMode: "cross-stage-resume" };
   if (deterministicFailure) return { prompt, promptMode: "fresh-retry" };
   return { prompt, promptMode: continued ? "repeated-full" : "initial" };
 }
@@ -325,7 +328,7 @@ export async function runStage({
   iter = 0,
   attempt = 0,
   deterministicFailure = null,
-  sessions = new Map(),
+  sessionLedger = makeSessionLedger(),
   maxCredits,
 }) {
   const template = readFileSync(path.resolve(promptRoot, stage.prompt), "utf8");
@@ -347,22 +350,24 @@ export async function runStage({
     `${String(stage.ord ?? 0).padStart(2, "0")}-${stage.id}${iter ? `__i${iter}` : ""}`,
   );
 
-  // SESSION CONTINUITY. With `resume`, a stage's later rounds continue the SAME
-  // conversation rather than starting cold: the author still has its context, and
-  // the re-sent input is served as cache-read. This is a capability of driving the
-  // CLI directly and it is per-stage config, so "resume vs fresh" is an experiment
-  // you can run without touching code.
-  //
-  // Keyed by iteration too: resuming chunk 1's conversation to build chunk 2 would
-  // silently carry the previous chunk's context into a fresh piece of work.
-  let sessionId;
-  let continued = false;
-  if (stage.resume) {
-    const key = `${stage.id}#${iter}`;
-    continued = sessions.has(key);
-    if (!sessions.has(key)) sessions.set(key, randomId());
-    sessionId = sessions.get(key);
+  const selected = selectSession({ ledger: sessionLedger, stage, iter });
+  if (!selected.ok) {
+    return {
+      ok: false,
+      error: selected.error,
+      kind: selected.kind,
+      wallMs: 0,
+      promptChars: null,
+      promptMode: null,
+      sessionId: null,
+      resumed: false,
+      resumedFrom: null,
+      resumeFailure: selected.failure,
+    };
   }
+  const sessionId = selected.sessionId || undefined;
+  const continued = selected.continuedTarget;
+  const crossStageAdoption = !!stage.resumeFrom && !continued;
   const resumeTemplate = stage.resumePrompt
     ? readFileSync(path.resolve(promptRoot, stage.resumePrompt), "utf8")
     : null;
@@ -374,12 +379,16 @@ export async function runStage({
     deterministicFailure,
     completionCommand,
     continued,
+    crossStageAdoption,
     attempt,
   });
   const invocation = {
     promptChars: prompt.length,
     promptMode,
     sessionId: sessionId || null,
+    resumed: selected.resumed,
+    resumedFrom: selected.resumedFrom,
+    provider: providerFor(stage.model).kind,
   };
 
   const started = Date.now();
@@ -394,7 +403,11 @@ export async function runStage({
     label,
     maxCredits,
     sessionId,
+    resumedFrom: selected.resumedFrom,
   });
+  invocation.sessionId = r.telemetry?.sessionId || sessionId || null;
+  if (r.telemetry && !r.telemetry.sessionId && invocation.sessionId)
+    r.telemetry.sessionId = invocation.sessionId;
 
   // A TIMEOUT IS NOT AN ANSWER. The child is killed and resolves through the normal
   // close path, so without this the caller sees only partial text and reports
@@ -682,13 +695,6 @@ export async function runCommandStage({
   };
 }
 
-function randomId() {
-  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0;
-    return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
-  });
-}
-
 export function selfTest() {
   const CASES = [];
 
@@ -752,6 +758,20 @@ export function selfTest() {
       resumedRetry.prompt.includes("attempt 2/3") &&
       resumedRetry.prompt.includes("line one\nline two") &&
       resumedRetry.prompt.includes("Do not repeat repository discovery"),
+  ]);
+  const crossStage = selectStagePrompt({
+    stage: { parse: "text", resumeFrom: "plan" },
+    initialTemplate: "ONLY THE FIX PROMPT",
+    resumeTemplate: "SMALLER LATER PROMPT",
+    ctx: {},
+    crossStageAdoption: true,
+    continued: false,
+  });
+  CASES.push([
+    "first cross-stage adoption sends the target's own full prompt",
+    crossStage.promptMode === "cross-stage-resume" &&
+      crossStage.prompt.includes("ONLY THE FIX PROMPT") &&
+      !crossStage.prompt.includes("SMALLER LATER PROMPT"),
   ]);
   const freshRetry = selectStagePrompt({
     stage: { parse: "text", resume: false },

@@ -47,11 +47,10 @@ stages:
     prompt: prompts/fix.md
     model: mai-code-1.1-flash
     tools: true
-    resume:
-      true # CONTINUE the builder's own session rather than starting a fresh
-      # one. It keeps the context it already paid for, and the re-sent
-      # input is served as cache-read. Across three rounds that is the
-      # difference between one conversation and three cold starts.
+    resumeFrom:
+      code # CONTINUE the builder's session rather than opening a fix-only one.
+      # Each round sends only the new review findings; the spec, repository
+      # discovery, tool results, and original build answer are already present.
 
 loop:
   stages: [review, fix]

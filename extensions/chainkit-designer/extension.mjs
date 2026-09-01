@@ -141,6 +141,8 @@ const session = await joinSession({
                 tools: s.tools,
                 produces: s.produces,
                 uses: s.uses,
+                resume: s.resume,
+                resumeFrom: s.resumeFrom,
                 inLoop: s.inLoop,
               })),
               loop: d.loop,

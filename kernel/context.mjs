@@ -10,7 +10,7 @@
 //     builder's account of it. That handoff is invisible here, which is why the
 //     runner records per-stage `filesChanged` -- otherwise the main channel carries
 //     no evidence at all.
-//   - the CLI SESSION. A stage may `resume` an earlier stage's session and inherit
+//   - the CLI SESSION. A stage may `resumeFrom` an earlier stage's session and inherit
 //     its whole conversation. That is a large, unnamed handoff; the runner records
 //     the sessionId so at least it is visible in the record.
 //

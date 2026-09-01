@@ -12,6 +12,7 @@ import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import { placeholders, rootOf } from "./context.mjs";
 import { modelWarnings } from "./models.mjs";
+import { providerFor } from "./providers.mjs";
 
 // Every key a stage may carry. An unknown key is a HARD ERROR, not a warning.
 //
@@ -23,6 +24,7 @@ const STAGE_KEYS = new Set([
   "id",
   "prompt",
   "resumePrompt",
+  "resumeFrom",
   "run",
   "produces",
   "parse",
@@ -43,7 +45,7 @@ const STAGE_KEYS = new Set([
 // that belief survive, and the run record would then show a stage with a model that
 // never ran -- unreadable next to a real one. Same reasoning as requiring every
 // model stage to name its model, inverted.
-const MODEL_ONLY_KEYS = ["model", "effort", "tools", "resume", "resumePrompt"];
+const MODEL_ONLY_KEYS = ["model", "effort", "tools", "resume", "resumePrompt", "resumeFrom"];
 
 // The types an `expects` declaration may name. Deliberately tiny: this exists to
 // catch a broken key contract, not to be a schema language.
@@ -99,6 +101,57 @@ function unknownKeys(obj, allowed, where) {
 
 const positiveInteger = (value) => Number.isSafeInteger(value) && value > 0;
 
+function sessionLocation(chain, stages, id) {
+  const stageIndex = stages.findIndex((s) => s.id === id);
+  if (stageIndex < 0) return null;
+  const fe = chain.foreach || null;
+  const feIds = new Set(fe?.stages || []);
+  const feLoopIds = new Set(fe?.loop?.stages || []);
+  const feRepair = fe?.completion?.repair?.stages || [];
+  if (feIds.has(id) || feRepair.includes(id)) {
+    if (feRepair.includes(id))
+      return { scope: "foreach", phase: 2, order: feRepair.indexOf(id), repeated: true };
+    if (feLoopIds.has(id))
+      return {
+        scope: "foreach",
+        phase: 1,
+        order: (fe.loop?.stages || []).indexOf(id),
+        repeated: true,
+      };
+    const firstPass = (fe?.stages || []).filter((stageId) => !feLoopIds.has(stageId));
+    return { scope: "foreach", phase: 0, order: firstPass.indexOf(id), repeated: false };
+  }
+
+  const repair = chain.completion?.repair?.stages || [];
+  if (repair.includes(id))
+    return { scope: "top", phase: 4, order: repair.indexOf(id), repeated: true };
+
+  const loopIds = new Set(chain.loop?.stages || []);
+  if (loopIds.has(id))
+    return {
+      scope: "top",
+      phase: 1,
+      order: (chain.loop?.stages || []).indexOf(id),
+      repeated: true,
+    };
+
+  const blockIndexes = [
+    stages.findIndex((s) => loopIds.has(s.id)),
+    stages.findIndex((s) => feIds.has(s.id)),
+  ].filter((i) => i >= 0);
+  if (!blockIndexes.length) return { scope: "top", phase: 0, order: stageIndex, repeated: false };
+  const first = Math.min(...blockIndexes);
+  const last = Math.max(...blockIndexes);
+  const phase = stageIndex < first ? 0 : stageIndex > last ? 3 : 2;
+  return { scope: "top", phase, order: stageIndex, repeated: false };
+}
+
+function isStrictlyEarlier(source, target) {
+  return (
+    source.phase < target.phase || (source.phase === target.phase && source.order < target.order)
+  );
+}
+
 // Validate WITHOUT spending anything. Every one of these is knowable before the
 // first model call, and a chain that cannot possibly work should never cost money
 // to discover that.
@@ -129,8 +182,16 @@ function validateChain(chain, { promptRoot, readPrompt = defaultReadPrompt } = {
       (typeof s.resumePrompt !== "string" || !s.resumePrompt.trim())
     )
       errors.push(`stage "${s.id}": resumePrompt must be a non-empty prompt file path`);
-    if (s.resumePrompt !== undefined && !(s.resume ?? chain.defaults?.resume ?? false))
-      errors.push(`stage "${s.id}": resumePrompt requires resume: true`);
+    if (s.resumeFrom !== undefined && (typeof s.resumeFrom !== "string" || !s.resumeFrom.trim()))
+      errors.push(`stage "${s.id}": resumeFrom must be a non-empty earlier stage id`);
+    if (s.resumeFrom !== undefined && (s.resume ?? chain.defaults?.resume ?? false))
+      errors.push(`stage "${s.id}": resume and resumeFrom cannot be combined`);
+    if (
+      s.resumePrompt !== undefined &&
+      !(s.resume ?? chain.defaults?.resume ?? false) &&
+      !s.resumeFrom
+    )
+      errors.push(`stage "${s.id}": resumePrompt requires resume: true or resumeFrom`);
     if (s.run) {
       for (const k of MODEL_ONLY_KEYS)
         if (s[k] !== undefined)
@@ -328,6 +389,67 @@ function validateChain(chain, { promptRoot, readPrompt = defaultReadPrompt } = {
     firstPassProducesBefore.set(id, [...firstPassProduces]);
     const produced = stages.find((s) => s.id === id)?.produces;
     if (produced) firstPassProduces.push(produced);
+  }
+
+  // SESSION REACHABILITY. Artifact flow and session flow are separate channels:
+  // a prompt may read an artifact from an outer scope, but a mutable CLI session
+  // may not be shared across foreach items.
+  const stageById = new Map(stages.map((s) => [s.id, s]));
+  for (const target of stages) {
+    if (typeof target.resumeFrom !== "string" || !target.resumeFrom.trim()) continue;
+    const source = stageById.get(target.resumeFrom);
+    if (!source) {
+      errors.push(`stage "${target.id}": resumeFrom names unknown stage "${target.resumeFrom}"`);
+      continue;
+    }
+    if (source.id === target.id) {
+      errors.push(`stage "${target.id}": resumeFrom cannot reference itself`);
+      continue;
+    }
+    if (source.run) {
+      errors.push(
+        `stage "${target.id}": resumeFrom source "${source.id}" is a run stage and has no model session`,
+      );
+      continue;
+    }
+    const sourceLocation = sessionLocation(chain, stages, source.id);
+    const targetLocation = sessionLocation(chain, stages, target.id);
+    if (!sourceLocation || !targetLocation) {
+      errors.push(
+        `stage "${target.id}": resumeFrom "${source.id}" has ambiguous execution topology`,
+      );
+      continue;
+    }
+    if (sourceLocation.scope !== targetLocation.scope) {
+      errors.push(
+        `stage "${target.id}": resumeFrom "${source.id}" crosses session scopes ` +
+          `(${sourceLocation.scope} -> ${targetLocation.scope}); top-level sessions and foreach-item sessions cannot be shared`,
+      );
+      continue;
+    }
+    if (!isStrictlyEarlier(sourceLocation, targetLocation)) {
+      errors.push(
+        `stage "${target.id}": resumeFrom "${source.id}" is not an earlier reachable invocation in the ${targetLocation.scope} scope`,
+      );
+      continue;
+    }
+    const sourceModel = source.model || chain.defaults?.model;
+    const targetModel = target.model || chain.defaults?.model;
+    const sourceProvider = providerFor(sourceModel);
+    const targetProvider = providerFor(targetModel);
+    if (sourceProvider.kind !== "cli" || targetProvider.kind !== "cli") {
+      errors.push(
+        `stage "${target.id}": resumeFrom requires session-capable CLI providers; ` +
+          `"${source.id}" uses ${sourceProvider.kind} and "${target.id}" uses ${targetProvider.kind}`,
+      );
+      continue;
+    }
+    if (sourceProvider.model !== targetProvider.model) {
+      errors.push(
+        `stage "${target.id}": resumeFrom "${source.id}" requires the same resolved model ` +
+          `(source "${sourceProvider.model}", target "${targetProvider.model}")`,
+      );
+    }
   }
 
   const visibleFor = (stage, { after = false } = {}) => {
@@ -792,6 +914,7 @@ export function resolveStages(chain) {
       ...common,
       prompt: s.prompt,
       resumePrompt: s.resumePrompt || null,
+      resumeFrom: s.resumeFrom || null,
       model: s.model || d.model,
       effort: s.effort || d.effort || "high",
       tools: s.tools ?? d.tools ?? false,
@@ -830,6 +953,7 @@ export function selfTest() {
     "bad.md": "use {{nothing}}",
     "loop.md": "use {{verdict}}",
     "fe-code.md": "build {{chunk}} per {{plan}}",
+    "item.md": "use {{chunk}}",
     "fe-review.md": "judge {{chunk.files}}",
     "fe-facts-review.md": "judge {{facts}}",
     "fe-fix.md": "fix per {{verdict}}",
@@ -891,11 +1015,11 @@ export function selfTest() {
     }).length === 0,
   ]);
   CASES.push([
-    "resumePrompt requires resume true",
+    "resumePrompt requires a continuation mode",
     V({
       ...base,
       stages: [{ id: "plan", prompt: "a.md", resumePrompt: "resume.md" }],
-    }).some((e) => e.includes("requires resume: true")),
+    }).some((e) => e.includes("requires resume: true or resumeFrom")),
   ]);
   CASES.push([
     "resumePrompt must be a prompt file path",
@@ -924,6 +1048,134 @@ export function selfTest() {
       defaults: { model: "m" },
       stages: [{ id: "plan", prompt: "a.md", resume: true, resumePrompt: "resume.md" }],
     })[0].resumePrompt === "resume.md",
+  ]);
+  const crossStage = (stages, extra = {}) =>
+    V({
+      seeds: { spec: "" },
+      defaults: { model: "m" },
+      stages,
+      ...extra,
+    });
+  CASES.push([
+    "resumeFrom accepts an earlier compatible model stage",
+    crossStage([
+      { id: "plan", prompt: "a.md" },
+      { id: "fix", prompt: "a.md", resumeFrom: "plan" },
+    ]).length === 0,
+  ]);
+  CASES.push([
+    "resumeFrom survives stage resolution",
+    resolveStages({
+      defaults: { model: "m" },
+      stages: [
+        { id: "plan", prompt: "a.md" },
+        { id: "fix", prompt: "a.md", resumeFrom: "plan" },
+      ],
+    })[1].resumeFrom === "plan",
+  ]);
+  CASES.push([
+    "resumePrompt is valid with resumeFrom",
+    crossStage([
+      { id: "plan", prompt: "a.md" },
+      { id: "fix", prompt: "a.md", resumeFrom: "plan", resumePrompt: "resume.md" },
+    ]).length === 0,
+  ]);
+  CASES.push([
+    "resume and resumeFrom are rejected together",
+    crossStage([
+      { id: "plan", prompt: "a.md" },
+      { id: "fix", prompt: "a.md", resume: true, resumeFrom: "plan" },
+    ]).some((e) => e.includes("cannot be combined")),
+  ]);
+  CASES.push([
+    "resumeFrom rejects an empty reference",
+    crossStage([{ id: "fix", prompt: "a.md", resumeFrom: " " }]).some((e) =>
+      e.includes("non-empty earlier stage id"),
+    ),
+  ]);
+  CASES.push([
+    "resumeFrom rejects an unknown stage",
+    crossStage([{ id: "fix", prompt: "a.md", resumeFrom: "missing" }]).some((e) =>
+      e.includes("unknown stage"),
+    ),
+  ]);
+  CASES.push([
+    "resumeFrom rejects self references",
+    crossStage([{ id: "fix", prompt: "a.md", resumeFrom: "fix" }]).some((e) =>
+      e.includes("cannot reference itself"),
+    ),
+  ]);
+  CASES.push([
+    "resumeFrom rejects a future stage",
+    crossStage([
+      { id: "fix", prompt: "a.md", resumeFrom: "plan" },
+      { id: "plan", prompt: "a.md" },
+    ]).some((e) => e.includes("not an earlier reachable invocation")),
+  ]);
+  CASES.push([
+    "resumeFrom rejects a command source",
+    crossStage([
+      { id: "facts", run: "echo facts" },
+      { id: "fix", prompt: "a.md", resumeFrom: "facts" },
+    ]).some((e) => e.includes("run stage")),
+  ]);
+  CASES.push([
+    "resumeFrom rejects different models",
+    crossStage([
+      { id: "plan", prompt: "a.md", model: "m-one" },
+      { id: "fix", prompt: "a.md", model: "m-two", resumeFrom: "plan" },
+    ]).some((e) => e.includes("same resolved model")),
+  ]);
+  CASES.push([
+    "resumeFrom rejects unsupported providers",
+    crossStage([
+      { id: "plan", prompt: "a.md", model: "azure:deepseek" },
+      { id: "fix", prompt: "a.md", model: "azure:deepseek", resumeFrom: "plan" },
+    ]).some((e) => e.includes("session-capable CLI providers")),
+  ]);
+  CASES.push([
+    "a foreach target cannot resume a top-level session",
+    crossStage(
+      [
+        { id: "plan", prompt: "a.md", produces: "items", parse: "json" },
+        { id: "fix", prompt: "item.md", resumeFrom: "plan" },
+      ],
+      {
+        foreach: { over: "items", as: "chunk", stages: ["fix"], max: 2 },
+      },
+    ).some((e) => e.includes("crosses session scopes")),
+  ]);
+  CASES.push([
+    "same-item foreach continuation is valid",
+    crossStage(
+      [
+        { id: "plan", prompt: "a.md", produces: "items", parse: "json" },
+        { id: "code", prompt: "item.md" },
+        { id: "fix", prompt: "item.md", resumeFrom: "code" },
+      ],
+      {
+        foreach: { over: "items", as: "chunk", stages: ["code", "fix"], max: 2 },
+      },
+    ).length === 0,
+  ]);
+  CASES.push([
+    "a later inner-loop source is rejected for the target's first round",
+    crossStage(
+      [
+        { id: "plan", prompt: "a.md", produces: "items", parse: "json" },
+        { id: "fix", prompt: "item.md", resumeFrom: "review" },
+        { id: "review", prompt: "item.md", produces: "verdict" },
+      ],
+      {
+        foreach: {
+          over: "items",
+          as: "chunk",
+          stages: ["fix", "review"],
+          loop: { stages: ["fix", "review"], until: "verdict.pass", max: 2 },
+          max: 2,
+        },
+      },
+    ).some((e) => e.includes("not an earlier reachable invocation")),
   ]);
   CASES.push(["a well-formed chain validates clean", V(base).length === 0]);
   CASES.push([
