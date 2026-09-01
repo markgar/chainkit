@@ -12,12 +12,20 @@
 // it here.
 
 import vm from "node:vm";
-import { realpathSync } from "node:fs";
+import { copyFileSync, realpathSync } from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { page } from "./render.mjs";
-import { chainRoots, engineRoot, listChains, resolveChainFile, headComment } from "./design.mjs";
+import {
+  chainRoots,
+  engineRoot,
+  listChains,
+  resolveChainFile,
+  headComment,
+  readDesign,
+} from "./design.mjs";
 
 let pass = 0;
 const fails = [];
@@ -49,6 +57,7 @@ eq(
 );
 eq("a stage's declared key contract is shown", html.includes("declared key contract"), true);
 eq("a stage's deterministic completion rule is shown", html.includes("completion ·"), true);
+eq("a stage's resume prompt has its own designer row", html.includes("resume prompt"), true);
 
 // ---------------------------------------------------------------------------
 // THE READ SIDE (design.mjs). This is where the panel's failures actually live,
@@ -76,6 +85,68 @@ mk("vendor/chainkit/examples/02-two/chain.yaml", "name: two\n");
 mk("vendor/chainkit/examples/02-two/prompts/code.md", "a prompt, not a chain");
 // Skipped on purpose: CI config is YAML and lives in a dot-directory.
 mk("vendor/chainkit/.github/workflows/ci.yml", "name: CI\n");
+mk("chain/initial.md", "Initial {{spec}}");
+mk("chain/resume.md", "Continue {{spec}} and {{plan}}");
+mk(
+  "chain/chain.yaml",
+  [
+    "name: continuation",
+    "seeds: { spec: value }",
+    "defaults: { model: m }",
+    "stages:",
+    "  - id: plan",
+    "    prompt: initial.md",
+    "    resume: true",
+    "    resumePrompt: resume.md",
+    "    produces: plan",
+    "",
+  ].join("\n"),
+);
+const continuation = await readDesign(
+  path.resolve(import.meta.dirname, "..", ".."),
+  path.join(tmp, "chain", "chain.yaml"),
+);
+eq("designer reports resumePrompt character count", continuation.stages[0].resumePromptChars, 30);
+eq("designer includes resumePrompt placeholders in dataflow", continuation.stages[0].uses, [
+  "spec",
+  "plan",
+]);
+
+// Reproduce the real vendored extension layout, including the API mistake that
+// source-repo tests hid: two levels above the copied module is `<host>/.github`,
+// not the engine root. The only kernel in this fixture is under vendor/chainkit,
+// and it returns a unique name so accidentally falling back to this checkout's
+// source kernel cannot make the test pass.
+const nestedDesigner = path.join(tmp, ".github", "extensions", "chainkit-designer");
+mkdirSync(nestedDesigner, { recursive: true });
+copyFileSync(path.join(import.meta.dirname, "design.mjs"), path.join(nestedDesigner, "design.mjs"));
+mk(
+  "vendor/chainkit/kernel/config.mjs",
+  [
+    "export function loadChain(file) {",
+    "  return {",
+    "    chain: { name: 'vendored-only', stages: [] },",
+    "    promptRoot: '.',",
+    "    errors: [],",
+    "  };",
+    "}",
+    "export function resolveStages() { return []; }",
+    "",
+  ].join("\n"),
+);
+mk("vendored-chain/chain.yaml", "name: source-kernel-would-read-this\n");
+const copiedDesign = await import(
+  `${pathToFileURL(path.join(nestedDesigner, "design.mjs")).href}?t=${Date.now()}`
+);
+const vendoredBoundary = await copiedDesign.readDesign(
+  path.resolve(nestedDesigner, "..", ".."),
+  path.join(tmp, "vendored-chain", "chain.yaml"),
+);
+eq(
+  "readDesign resolves a copied vendored extension through vendor/chainkit",
+  vendoredBoundary.name,
+  "vendored-only",
+);
 
 // chainRoots also considers the CWD, deliberately -- an operator standing in a
 // repo expects to see that repo's chains. That makes the CWD a leak INTO this
@@ -127,6 +198,28 @@ eq(
   "the engine root is the one with kernel/, not the one with chains/",
   path.relative(tmp, engineRoot(null, { base: tmp })),
   path.join("vendor", "chainkit"),
+);
+eq(
+  "a designer running from a vendored extension resolves the host's vendored kernel",
+  path.relative(
+    tmp,
+    engineRoot(null, {
+      base: path.join(tmp, ".github", "extensions", "chainkit-designer"),
+    }),
+  ),
+  path.join("vendor", "chainkit"),
+);
+const standalone = path.join(tmp, "standalone");
+mk("standalone/kernel/config.mjs", "");
+eq(
+  "a designer running inside the source repository resolves its direct kernel",
+  path.relative(
+    standalone,
+    engineRoot(null, {
+      base: path.join(standalone, "extensions", "chainkit-designer"),
+    }),
+  ),
+  "",
 );
 eq(
   "a chain is resolvable by bare name, from whichever root holds it",

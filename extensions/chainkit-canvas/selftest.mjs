@@ -60,6 +60,15 @@ write("01-plan", "plan.jsonl", [
   { type: "session.usage_checkpoint", data: { totalNanoAiu: 5e9 } },
   { type: "result", data: {} },
 ]);
+write("06-current-only", "current-only.jsonl", [
+  {
+    type: "model.model_call_success",
+    data: { responseUsage: { completion_tokens: 806 } },
+  },
+  { type: "assistant.message", data: { model: "model-current", content: "current schema only" } },
+  { type: "session.usage_checkpoint", data: { totalNanoAiu: 0 } },
+  { type: "result", data: {} },
+]);
 // Stage 2: two loop rounds, JSON output, one value nested.
 write("02-review", "review.jsonl", [
   {
@@ -92,6 +101,18 @@ write("03-nobody-has-ever-seen-this", "nobody-has-ever-seen-this.jsonl", [
       model: "mystery-9000",
     },
   },
+  { type: "result", data: {} },
+]);
+write("05-current-usage", "current-usage.jsonl", [
+  {
+    type: "model.model_call_success",
+    data: { responseUsage: { completion_tokens: 647 } },
+  },
+  {
+    type: "assistant.message",
+    data: { model: "model-current", outputTokens: 647, content: "mixed schema" },
+  },
+  { type: "session.usage_checkpoint", data: { totalNanoAiu: 0 } },
   { type: "result", data: {} },
 ]);
 
@@ -152,6 +173,8 @@ writeFileSync(
         parse: "text",
       },
       { id: "never-ran", ord: 4, model: "model-z", tools: true, resume: true, parse: "text" },
+      { id: "current-usage", ord: 5, model: "model-current", tools: false, parse: "text" },
+      { id: "current-only", ord: 6, model: "model-current", tools: false, parse: "text" },
     ],
   }),
 );
@@ -159,7 +182,7 @@ writeFileSync(
 const run = readRun(runDir, root);
 // ONE ROW PER CALL. `review` ran twice, so it is two rows -- that is the point of
 // the row model: a fix loop's interleaving is only visible if each round is a row.
-const [s1, s2, s2b, s3] = run.stages;
+const [s1, s2, s2b, s3, , s5, s6] = run.stages;
 
 // THE 9x BUG. Checkpoints are cumulative: 3 then 5 means the call cost 5, not 8.
 eq("cumulative checkpoints collapse to max", s1.aiu, 5);
@@ -168,12 +191,20 @@ eq("run total sums per-call maxima", run.totals.aiu, 8);
 eq(
   "stages are in execution order",
   run.stages.map((s) => s.id),
-  ["plan", "review", "review", "nobody-has-ever-seen-this", "never-ran"],
+  [
+    "plan",
+    "review",
+    "review",
+    "nobody-has-ever-seen-this",
+    "never-ran",
+    "current-usage",
+    "current-only",
+  ],
 );
 eq(
   "ord comes from the dir prefix, or from the manifest for a stage with no dir yet",
   run.stages.map((s) => s.ord),
-  [1, 2, 2, 3, 4],
+  [1, 2, 2, 3, 4, 5, 6],
 );
 eq("an unknown stage name still renders", s3.id, "nobody-has-ever-seen-this");
 eq("a declared completion command reaches the run view", s1.declared.completion.run, "pnpm check");
@@ -194,6 +225,9 @@ eq(
 // An unmetered call must read as "not measured", never as free.
 eq("unmetered call has null aiu", s3.rounds[0].aiu, null);
 eq("unmetered count reaches the totals", run.totals.unmetered, 1);
+eq("current responseUsage tokens reach the call", s5.rounds[0].outputTokens, 647);
+eq("mixed current and legacy token schemas are not double-counted", s5.outputTokens, 647);
+eq("current-only responseUsage tokens reach the call", s6.rounds[0].outputTokens, 806);
 
 // JSON output is flattened without interpreting any key.
 eq(
@@ -213,9 +247,9 @@ eq("tool status survives", s1.rounds[0].steps.filter((x) => x.status === "failed
 eq(
   "totals count calls, and stages counts what the chain DECLARED (incl. not-yet-run)",
   [run.totals.calls, run.totals.stages],
-  [4, 4],
+  [6, 6],
 );
-eq("output tokens sum", run.totals.outputTokens, 1300);
+eq("a total with an unreported call remains unknown", run.totals.outputTokens, null);
 
 // No process-specific field may reappear on the public shape.
 for (const k of ["chunks", "builderAiu", "reviewerAiu"]) {
@@ -252,7 +286,7 @@ eq("folding in the record added no process-specific field", "verdict" in run, fa
 // PRE-LOADING THE PIPELINE. Without it the view discovers a stage only when that
 // stage starts writing, so a live run cannot be told apart from a halted one --
 // both look like a chain with exactly the stages that have logs.
-eq("a declared stage that has not started still appears", run.stages.length, 5);
+eq("a declared stage that has not started still appears", run.stages.length, 7);
 const pending = run.stages[4];
 // This fixture is a FINISHED run (it has a record), so an unrun stage is skipped,
 // not pending. The live-run case -- where "pending" is still the right word -- is
@@ -273,7 +307,7 @@ eq("a declared stage name nobody chose in advance survives", run.stages[3].model
 // A run recorded before the manifest existed must still read.
 rmSync(path.join(runDir, "_chain.json"));
 const legacy = readRun(runDir, root);
-eq("a run with no manifest still reads", legacy.stages.length, 4);
+eq("a run with no manifest still reads", legacy.stages.length, 6);
 eq(
   "with no manifest, nothing is pending",
   legacy.stages.filter((s) => s.status === "pending").length,
@@ -800,6 +834,68 @@ rmSync(root, { recursive: true, force: true });
   rmSync(jRoot, { recursive: true, force: true });
 }
 
+// A completion failure must be visible before the final run record exists.
+{
+  const liveRoot = mkdtempSync(path.join(tmpdir(), "ck-canvas-events-"));
+  const liveId = "events__zz__2026-01-01T00-00-00";
+  const liveDir = path.join(liveRoot, "results", "chain-runs", "logs", liveId);
+  mkdirSync(path.join(liveDir, "01-build"), { recursive: true });
+  writeFileSync(
+    path.join(liveDir, "_chain.json"),
+    JSON.stringify({
+      stages: [
+        {
+          id: "build",
+          ord: 1,
+          model: "m",
+          tools: true,
+          completion: { run: "pnpm check", attempts: 3 },
+        },
+      ],
+    }),
+  );
+  writeFileSync(
+    path.join(liveDir, "01-build", "build.jsonl"),
+    [
+      { type: "assistant.message", data: { model: "m", outputTokens: 1, content: "done" } },
+      { type: "result", data: {} },
+    ]
+      .map((line) => JSON.stringify(line))
+      .join("\n"),
+  );
+  writeFileSync(
+    path.join(liveDir, "_events.jsonl"),
+    JSON.stringify({
+      type: "completion.checked",
+      timestamp: "2026-01-01T00:00:01Z",
+      scope: "stage",
+      identity: { stage: "build", iter: 0, round: 0, callAttempt: 0 },
+      check: {
+        command: "pnpm check",
+        status: "failed",
+        exitCode: 1,
+        output: "first line\nsecond line\nthird line",
+        attempt: 1,
+        attempts: 3,
+        ok: false,
+      },
+    }) + "\n",
+  );
+  const liveFailure = readRun(liveDir, liveRoot);
+  eq("generic completion events are exposed by the run reader", liveFailure.events.length, 1);
+  eq(
+    "a live event failure attaches to attempt one without a final record",
+    liveFailure.stages[0].rounds[0].completionCheck.output,
+    "first line\nsecond line\nthird line",
+  );
+  eq(
+    "all bounded failure lines reach the stage completion detail",
+    liveFailure.stages[0].completion[0].output,
+    "first line\nsecond line\nthird line",
+  );
+  rmSync(liveRoot, { recursive: true, force: true });
+}
+
 // TWO ROOTS. Run records live beside the CHAIN that produced them, so a repo has
 // more than one results dir: the project's `.chainkit/` and the vendored engine's
 // own. Which one a run landed in is an artifact of which chain file was used, not
@@ -851,6 +947,13 @@ rmSync(root, { recursive: true, force: true });
     html.includes("<b>Exit criterion</b>") &&
       html.includes("up to ${attempts} attempt") &&
       html.includes("completion.run"),
+    true,
+  );
+  eq(
+    "bounded completion failure output renders in a capped scrollable detail",
+    html.includes("completion-failures") &&
+      html.includes("max-height: 180px") &&
+      html.includes("check.output || check.tail"),
     true,
   );
   eq(

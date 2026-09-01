@@ -111,13 +111,19 @@ export function page() {
   .round { font-size: 10px; font-weight: 600; padding: 0 5px; border-radius: 4px;
            background: var(--background-color-muted, #f6f8fa); color: var(--muted);
            border: 1px solid var(--border-color-default, #d0d7de); }
-  .shead { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 5px; }
+  .shead { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 7px; }
   .sord { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 11px; }
   .criterion { display: flex; align-items: baseline; gap: 7px; margin: 1px 0 7px;
                color: var(--muted); font-size: 11px; line-height: 1.45; }
   .criterion b { flex: none; color: var(--text-color-default, #1f2328); font-weight: 600; }
   .criterion code { overflow-wrap: anywhere; }
   .criterion .bound { flex: none; white-space: nowrap; }
+  .completion-failures { margin: 0 0 8px 26px; display: grid; gap: 6px; }
+  .completion-failure { border-left: 3px solid var(--bad); padding: 6px 8px;
+                        background: rgba(248,81,73,.07); border-radius: 4px; }
+  .completion-failure .failure-head { color: var(--bad); font-size: 11px; font-weight: 600; }
+  .completion-failure pre { margin: 5px 0 0; max-height: 180px; overflow: auto;
+                            white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
   .call { border: 1px solid var(--border-color-default, #d0d7de); border-radius: 8px;
           margin-bottom: 6px; overflow: hidden; }
   .chead { width: 100%; display: flex; align-items: center; gap: 8px; padding: 7px 10px;
@@ -173,7 +179,8 @@ export function page() {
      ten minutes ago looked exactly as urgent as the one working now -- read, quite
      reasonably, as "why is that one highlighted?". Finished is plain; running is
      the accent. */
-  .sid { font-weight: 700; color: var(--accent, #0969da); }
+  .sid { font-size: 18px; line-height: 1.15; font-weight: 750; letter-spacing: .025em;
+         text-transform: uppercase; color: var(--accent, #0969da); }
   .stage.s-ran .sid { font-weight: 500; color: var(--text-color-default, #1f2328); }
   .say { margin: 6px 10px 8px 14px; padding: 7px 9px; border-radius: 6px; white-space: pre-wrap;
          background: var(--background-color-muted, #f6f8fa);
@@ -410,7 +417,7 @@ function render(s) {
     card("stages", t.stages) +
     card("calls", t.calls) +
     card("tool calls", t.tools) +
-    card("out tokens", t.outputTokens.toLocaleString()) +
+    card("out tokens", t.outputTokens == null ? "not reported" : t.outputTokens.toLocaleString()) +
     card(t.unmetered ? "AiU (floor)" : "AiU", t.aiu.toFixed(2) + (t.unmetered ? " +?" : ""),
       t.unmetered ? \`<div class="k" style="margin-top:3px;color:#ffd479">\${t.unmetered} call(s) not metered — this is a FLOOR</div>\` : "");
 
@@ -536,6 +543,15 @@ function render(s) {
       <span class="bound">up to \${attempts} attempt\${attempts === 1 ? "" : "s"}</span>
     </div>\`;
   }
+  function completionFailures(st) {
+    const failed = (st.completion || []).filter((check) => check && check.ok === false);
+    if (!failed.length) return "";
+    return \`<div class="completion-failures">\${failed.map((check) => \`
+      <div class="completion-failure">
+        <div class="failure-head">Completion attempt \${esc(check.attempt || "?")}/\${esc(check.attempts || "?")} failed · exit \${esc(check.exitCode ?? check.code ?? "?")}</div>
+        <pre class="mono">\${esc(check.output || check.tail || "(no output captured)")}</pre>
+      </div>\`).join("")}</div>\`;
+  }
 
   // GROUP HEADERS. With a fan-out the rows are element-major -- everything for
   // element 1, then element 2 -- and a flat list of 12 rows hides that structure.
@@ -599,6 +615,7 @@ function render(s) {
       </div>
       \${channels(st)}
       \${exitCriterion(st)}
+      \${completionFailures(st)}
       \${st.rounds.map((p) => {
         const key = (st.key || st.id) + "/" + p.label;
         const isOpen = key === activeKey;

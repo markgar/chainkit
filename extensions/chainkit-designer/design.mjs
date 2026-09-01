@@ -18,16 +18,33 @@ import path from "node:path";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "..", "..", "..");
 
+function ancestors(start) {
+  const out = [];
+  let dir = path.resolve(start);
+  for (;;) {
+    out.push(dir);
+    const parent = path.dirname(dir);
+    if (parent === dir) return out;
+    dir = parent;
+  }
+}
+
 // TWO DIFFERENT ROOTS, and conflating them is the bug. The ENGINE root holds
 // `kernel/` -- it is vendored, replaced wholesale, and there is exactly one. The
 // CHAIN roots hold chain files -- `.chainkit/` is the processes this repo runs and
 // `vendor/chainkit/` is the engine's own examples, and both are real. The designer
 // validates a chain from either root using the one engine.
 export function engineRoot(workspacePath, { base = repoRoot } = {}) {
-  for (const b of [base, workspacePath, process.cwd()]) {
+  const seen = new Set();
+  for (const b of [base, workspacePath, process.cwd(), here]) {
     if (!b) continue;
-    const cand = path.join(b, "vendor", "chainkit");
-    if (existsSync(path.join(cand, "kernel"))) return cand;
+    for (const root of ancestors(b)) {
+      for (const cand of [root, path.join(root, "vendor", "chainkit")]) {
+        if (seen.has(cand)) continue;
+        seen.add(cand);
+        if (existsSync(path.join(cand, "kernel", "config.mjs"))) return cand;
+      }
+    }
   }
   return path.join(base, "vendor", "chainkit");
 }
@@ -138,7 +155,13 @@ export function resolveChainFile(roots, want) {
 export async function readDesign(root, file) {
   if (!file || !existsSync(file)) return { file, exists: false };
 
-  const { loadChain, resolveStages } = await kernel(root);
+  // Accept either an already-resolved engine root or the workspace/base a caller
+  // naturally has. The extension itself lives under `.github/extensions` when
+  // vendored, so treating `<host>/.github` as an engine root imports the nonexistent
+  // `<host>/.github/kernel/config.mjs`. Resolution belongs at this API boundary:
+  // every caller, including copied extensions and tests, gets the same layout logic.
+  const resolvedEngine = engineRoot(root, { base: root || repoRoot });
+  const { loadChain, resolveStages } = await kernel(resolvedEngine);
   let chain, promptRoot, errors;
   try {
     ({ chain, promptRoot, errors } = loadChain(file));
@@ -170,31 +193,55 @@ export async function readDesign(root, file) {
 
   const view = stages.map((s) => {
     const promptFile = s.prompt ? path.resolve(promptRoot, s.prompt) : null;
-    let uses = [];
+    const resumePromptFile = s.resumePrompt ? path.resolve(promptRoot, s.resumePrompt) : null;
+    let initialUses = [];
+    let resumeUses = [];
     const promptMissing = !!promptFile && !existsSync(promptFile);
+    const resumePromptMissing = !!resumePromptFile && !existsSync(resumePromptFile);
     let promptChars = 0;
+    let resumePromptChars = 0;
     if (s.run) {
       promptChars = s.run.length;
-      uses = [
+      initialUses = [
         ...new Set([...s.run.matchAll(/\{\{\s*([\w.]+)\s*\}\}/g)].map((m) => m[1].split(".")[0])),
       ];
     } else if (!promptMissing) {
       const text = readFileSync(promptFile, "utf8");
       promptChars = text.length;
-      uses = [
+      initialUses = [
         ...new Set([...text.matchAll(/\{\{\s*([\w.]+)\s*\}\}/g)].map((m) => m[1].split(".")[0])),
       ];
     }
+    if (resumePromptFile && !resumePromptMissing) {
+      const text = readFileSync(resumePromptFile, "utf8");
+      resumePromptChars = text.length;
+      resumeUses.push(
+        ...[...text.matchAll(/\{\{\s*([\w.]+)\s*\}\}/g)].map((m) => m[1].split(".")[0]),
+      );
+    }
+    const uses = [...new Set([...initialUses, ...resumeUses])];
+    const initialVisible = new Set(produced);
+    const resumeVisible = new Set(produced);
+    if (s.produces) resumeVisible.add(s.produces);
     const row = {
       ...s,
       prompt: s.prompt,
       promptFile,
       promptMissing,
       promptChars,
+      resumePrompt: s.resumePrompt,
+      resumePromptFile,
+      resumePromptMissing,
+      resumePromptChars,
       uses,
       // Unresolved inputs are shown per stage rather than only in the error list,
       // so the break is visible AT the stage that breaks.
-      unresolved: uses.filter((u) => !produced.has(u)),
+      unresolved: [
+        ...new Set([
+          ...initialUses.filter((u) => !initialVisible.has(u)),
+          ...resumeUses.filter((u) => !resumeVisible.has(u)),
+        ]),
+      ],
       inLoop: loopIds.has(s.id),
       inCompletionRepair: completionRepairIds.has(s.id),
       inForeachCompletionRepair: foreachCompletionRepairIds.has(s.id),

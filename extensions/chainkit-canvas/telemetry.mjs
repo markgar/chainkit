@@ -324,7 +324,10 @@ export function annotateConcurrency(steps, lastAt = null) {
 function readCall(file, label) {
   const events = parseJsonl(file);
   const steps = [];
-  let outputTokens = 0;
+  let currentOutputTokens = 0;
+  let currentOutputSeen = false;
+  let legacyOutputTokens = 0;
+  let legacyOutputSeen = false;
   // The provider says outright when it CUT a response off. Without this the
   // canvas renders the surviving fragment as though it were the answer -- the
   // motivating case began mid-word and carried a closing fence with no opening
@@ -372,6 +375,10 @@ function readCall(file, label) {
         break;
       }
       case "model.model_call_success":
+        if (typeof d.responseUsage?.completion_tokens === "number") {
+          currentOutputTokens += d.responseUsage.completion_tokens;
+          currentOutputSeen = true;
+        }
         for (const c of d.responseChunk?.choices || [])
           if (c?.finish_reason === "length") truncated++;
         if (typeof d.maxOutputTokens === "number") outputCeiling = d.maxOutputTokens;
@@ -386,7 +393,10 @@ function readCall(file, label) {
         break;
       case "assistant.message":
         if (d.model) model = d.model;
-        if (typeof d.outputTokens === "number") outputTokens += d.outputTokens;
+        if (typeof d.outputTokens === "number") {
+          legacyOutputTokens += d.outputTokens;
+          legacyOutputSeen = true;
+        }
         if (d.content && String(d.content).trim()) {
           text = String(d.content);
           steps.push({ kind: "say", at: ev.timestamp, text: text.slice(0, 4000) });
@@ -446,7 +456,11 @@ function readCall(file, label) {
     model,
     steps,
     peakParallel,
-    outputTokens,
+    outputTokens: currentOutputSeen
+      ? currentOutputTokens
+      : legacyOutputSeen
+        ? legacyOutputTokens
+        : null,
     truncated,
     outputCeiling,
     callTexts,
@@ -739,6 +753,25 @@ function readCallOrder(runDir) {
   return order.size ? order : null;
 }
 
+function readEvents(runDir) {
+  let text;
+  try {
+    text = readFileSync(path.join(runDir, "_events.jsonl"), "utf8");
+  } catch {
+    return [];
+  }
+  const events = [];
+  for (const line of text.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      events.push(JSON.parse(line));
+    } catch {
+      /* append-only journals may be observed between writes */
+    }
+  }
+  return events;
+}
+
 export function readRun(runDir, root) {
   const stages = [];
   let names;
@@ -765,6 +798,7 @@ export function readRun(runDir, root) {
     /* absent, or being written */
   }
   const planned = new Map((plan?.stages || []).map((s) => [s.id, s]));
+  const events = readEvents(runDir);
 
   // Directory names carry the execution index (`03-review`), so a plain sort is
   // the true order of the run.
@@ -839,7 +873,10 @@ export function readRun(runDir, root) {
         // expensive. Which one is "the cheap one" is a question about the config
         // being tested, not a fact the reader should encode.
         aiu: rounds.reduce((n, r2) => n + (r2.aiu ?? 0), 0),
-        outputTokens: rounds.reduce((n, r2) => n + r2.outputTokens, 0),
+        outputTokens:
+          rounds.length && rounds.every((r2) => r2.outputTokens != null)
+            ? rounds.reduce((n, r2) => n + (r2.outputTokens ?? 0), 0)
+            : null,
         truncated: rounds.reduce((n, r2) => n + (r2.truncated || 0), 0),
         outputCeiling: rounds.find((r2) => r2.outputCeiling)?.outputCeiling ?? null,
         tools: rounds.reduce((n, r2) => n + r2.toolCount, 0),
@@ -897,7 +934,7 @@ export function readRun(runDir, root) {
     label: p.id,
     rounds: [],
     aiu: 0,
-    outputTokens: 0,
+    outputTokens: null,
     truncated: 0,
     outputCeiling: null,
     tools: 0,
@@ -956,6 +993,26 @@ export function readRun(runDir, root) {
       completion: p.completion || null,
     };
     if (p.expects) st.expects = p.expects;
+  }
+
+  // Completion checks are journaled immediately, while the final record does not
+  // exist until the run ends. Attach live stage checks to both the stage row and
+  // the exact call attempt they judged; the finished record below may enrich or
+  // replace the stage-level view once authoritative data exists.
+  for (const event of events) {
+    if (event?.type !== "completion.checked" || event.scope !== "stage") continue;
+    const identity = event.identity || {};
+    const st = stages.find(
+      (row) =>
+        row.id === identity.stage &&
+        (row.iter || 0) === (identity.iter || 0) &&
+        (row.round || 0) === (identity.round || 0),
+    );
+    if (!st) continue;
+    if (!Array.isArray(st.completion)) st.completion = [];
+    st.completion.push(event.check);
+    const call = st.rounds.find((row) => (row.attempt || 0) === (identity.callAttempt || 0));
+    if (call) call.completionCheck = event.check;
   }
 
   // Record JSON exists only after the run ends -- optional enrichment.
@@ -1098,7 +1155,10 @@ export function readRun(runDir, root) {
     // How much of the total is missing. A cost figure with unmetered calls in
     // it is a FLOOR, not the bill, and the view must be able to say so.
     unmetered: all.filter((c) => !c.metered).length,
-    outputTokens: all.reduce((n, c) => n + c.outputTokens, 0),
+    outputTokens:
+      all.length && all.every((c) => c.outputTokens != null)
+        ? all.reduce((n, c) => n + (c.outputTokens ?? 0), 0)
+        : null,
     tools: all.reduce((n, c) => n + c.toolCount, 0),
     calls: all.length,
     // DISTINCT stages, not rows. A row is one call now, so a fan-out over four
@@ -1115,6 +1175,7 @@ export function readRun(runDir, root) {
     stages,
     totals,
     summary,
+    events,
     artifactHistory,
     plan,
     // WHAT THE FAN-OUT ITERATES, in the chain's own word.

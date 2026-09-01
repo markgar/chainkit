@@ -39,7 +39,10 @@ export function parseCopilotJsonl(raw) {
   const finalParts = [];
   let result = null;
   let usageCheckpoint = null;
-  let outputTokensTotal = 0;
+  let currentOutputTokens = 0;
+  let currentOutputSeen = false;
+  let legacyOutputTokens = 0;
+  let legacyOutputSeen = false;
   // A response the model was CUT OFF from finishing. The provider says so
   // explicitly (`finish_reason: "length"`), and throwing that away is how a
   // truncated answer arrives downstream looking like a badly-behaved model:
@@ -69,6 +72,11 @@ export function parseCopilotJsonl(raw) {
     if (t === "session.usage_checkpoint" && e.data) usageCheckpoint = e.data;
 
     if (t === "model.model_call_success" && e.data) {
+      const completionTokens = e.data.responseUsage?.completion_tokens;
+      if (typeof completionTokens === "number") {
+        currentOutputTokens += completionTokens;
+        currentOutputSeen = true;
+      }
       const choice = e.data.responseChunk?.choices?.[0];
       if (choice?.finish_reason === "length") truncatedCalls++;
       const partial = choice?.delta?.content;
@@ -84,7 +92,10 @@ export function parseCopilotJsonl(raw) {
     if (t === "assistant.message") {
       const d = e.data || {};
       if (d.model) models.add(d.model);
-      if (typeof d.outputTokens === "number") outputTokensTotal += d.outputTokens;
+      if (typeof d.outputTokens === "number") {
+        legacyOutputTokens += d.outputTokens;
+        legacyOutputSeen = true;
+      }
       const reqs = Array.isArray(d.toolRequests) ? d.toolRequests : [];
       for (const tr of reqs) {
         const name = tr.name || tr.toolName || tr.tool || tr.type || "?";
@@ -210,7 +221,13 @@ export function parseCopilotJsonl(raw) {
     },
     turns: eventTypeCounts["assistant.turn_end"] || 0,
     messageCount: messages.length,
-    outputTokensTotal,
+    // Current CLI model-call usage is authoritative. assistant.message is a
+    // legacy fallback only, so a mixed stream never counts the same call twice.
+    outputTokensTotal: currentOutputSeen
+      ? currentOutputTokens
+      : legacyOutputSeen
+        ? legacyOutputTokens
+        : null,
     truncatedCalls,
     maxOutputTokens,
     callTexts,
@@ -379,6 +396,30 @@ export function selfTest() {
   // than throwing -- an unknown is not evidence of a fault.
   const quiet = parseCopilotJsonl(line("model.model_call_success", { responseUsage: {} }));
   cases.push(["a missing finish_reason is not a truncation", quiet.truncatedCalls === 0]);
+  const currentUsage = parseCopilotJsonl(
+    [
+      line("model.model_call_success", { responseUsage: { completion_tokens: 647 } }),
+      line("model.model_call_success", { responseUsage: { completion_tokens: 806 } }),
+    ].join("\n"),
+  );
+  cases.push([
+    "current responseUsage output tokens are summed",
+    currentUsage.outputTokensTotal === 1453,
+  ]);
+  const mixedUsage = parseCopilotJsonl(
+    [
+      line("model.model_call_success", { responseUsage: { completion_tokens: 647 } }),
+      line("assistant.message", { outputTokens: 647, content: "same call" }),
+    ].join("\n"),
+  );
+  cases.push([
+    "current responseUsage is authoritative over the legacy mixed representation",
+    mixedUsage.outputTokensTotal === 647,
+  ]);
+  cases.push([
+    "unreported output tokens remain unknown",
+    parseCopilotJsonl(line("result", {})).outputTokensTotal === null,
+  ]);
 
   return cases;
 }
