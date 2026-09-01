@@ -153,7 +153,7 @@ export function page() {
   .st.ok { color: var(--ok); } .st.failed { color: var(--bad); } .st.running { color: var(--warn); }
   /* min-width, NOT width: this was a fixed 58px column, and every tool name
      longer than that (repo_read, ts_outline, ts_symbol) overflowed its box and
-     collided with the detail -- "repo_readgovernance/planning.md". It was
+     collided with the detail -- "repo_readguidance/review.md". It was
      invisible for as long as those tools rendered no detail at all. */
   /* One shared column per round, sized to the widest tool name in that round, so
      details line up instead of stepping in and out as names change length.

@@ -670,7 +670,7 @@ rmSync(root, { recursive: true, force: true });
   }
 
   // A RESUMED STAGE'S COST IS CUMULATIVE, SO IT IS A DIFFERENCE, NOT A SUM.
-  // Real numbers from build6's fixer: round 1 reported 20.74 and round 2 reported
+  // Real numbers from a resumed fixer: round 1 reported 20.74 and round 2 reported
   // 45.39, because round 2 continued round 1's session and its checkpoint carries
   // the whole session's running total. Summing them claimed 66.13 for a stage that
   // cost 45.39 -- and made every per-round figure wrong too. The tell that this is
@@ -912,12 +912,12 @@ rmSync(root, { recursive: true, force: true });
         },
         gate: {
           ok: false,
-          tail: "Unused exported types (1)\nFinishedScheduleEntry  type  apps/server/src/site/schedule/memo.ts:4:13",
+          tail: "Unused exported types (1)\nCachedWidget  type  src/cache.ts:4:13",
         },
       },
       "chunk",
     ),
-    "Completed 4/4 chunks; 4/4 gates passed, but the final gate failed: unused exported type FinishedScheduleEntry.",
+    "Completed 4/4 chunks; 4/4 gates passed, but the final gate failed: unused exported type CachedWidget.",
   );
   eq(
     "a new completion record renders completed and unverified",
@@ -1189,13 +1189,13 @@ rmSync(root, { recursive: true, force: true });
     "a batch reader names its targets and its size",
     describeTool("repo_read", {
       targets: [
-        { path: ".chainkit/governance/planning.md" },
-        { path: "CONSTITUTION.md" },
-        { path: "docs/architecture.md" },
-        { path: "packages/domain/src/attendee.ts" },
+        { path: ".chainkit/guidance/review.md" },
+        { path: "PROJECT.md" },
+        { path: "docs/design.md" },
+        { path: "src/types/widget.ts" },
       ],
     }),
-    "governance/planning.md, CONSTITUTION.md, docs/architecture.md +1 · 4 targets",
+    "guidance/review.md, PROJECT.md, docs/design.md +1 · 4 targets",
   );
   eq(
     "a small batch is named without a count",
@@ -1206,19 +1206,19 @@ rmSync(root, { recursive: true, force: true });
     "a batch that names one file repeatedly says it once",
     describeTool("repo_read", {
       targets: [
-        { path: "docs/architecture.md", find: ["a"] },
-        { path: "docs/architecture.md", find: ["b"] },
-        { path: "docs/architecture.md", find: ["c"] },
+        { path: "docs/design.md", find: ["a"] },
+        { path: "docs/design.md", find: ["b"] },
+        { path: "docs/design.md", find: ["c"] },
         { path: "src/config.ts" },
       ],
     }),
-    "docs/architecture.md, src/config.ts · 4 targets",
+    "docs/design.md, src/config.ts · 4 targets",
   );
   eq(
     "a change snapshot names its base and scope",
     describeTool("repo_changes", {
       base: "HEAD^",
-      paths: ["apps/server/src/a.ts", "packages/domain/src/b.ts"],
+      paths: ["apps/api/src/a.ts", "packages/core/src/b.ts"],
     }),
     "HEAD^ → src/a.ts, src/b.ts",
   );
@@ -1226,9 +1226,9 @@ rmSync(root, { recursive: true, force: true });
     "a ref reader names the revision and targets",
     describeTool("repo_read_ref", {
       ref: "main",
-      targets: [{ path: "docs/architecture.md" }, { path: "CONSTITUTION.md" }],
+      targets: [{ path: "docs/design.md" }, { path: "PROJECT.md" }],
     }),
-    "main · docs/architecture.md, CONSTITUTION.md",
+    "main · docs/design.md, PROJECT.md",
   );
   eq(
     "re-reading a spilled tool result is not shown as a file path",
@@ -1240,8 +1240,8 @@ rmSync(root, { recursive: true, force: true });
   );
   eq(
     "a symbol lookup shows the symbol",
-    describeTool("ts_symbol", { symbol: "EventsStore" }),
-    "EventsStore",
+    describeTool("ts_symbol", { symbol: "WidgetStore" }),
+    "WidgetStore",
   );
   eq(
     "an UNKNOWN tool falls back to a scalar arg rather than nothing",

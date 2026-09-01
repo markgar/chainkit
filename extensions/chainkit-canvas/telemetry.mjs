@@ -120,8 +120,8 @@ export function describeTool(name, args) {
     // A batch reader: one call is many files, so the count is as interesting as
     // the names. Without it every call to it looks identical. Names are deduped
     // because a batch legitimately lists one file several times (same path,
-    // different `find` terms), and "architecture.md, architecture.md,
-    // architecture.md" spends the whole row saying one thing. The count is left
+    // different `find` terms), and "design.md, design.md, design.md" spends the
+    // whole row saying one thing. The count is left
     // as the true target count, so the two disagreeing is meaningful.
     case "repo_read": {
       const targets = Array.isArray(args.targets) ? args.targets : [];
