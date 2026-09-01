@@ -1499,6 +1499,7 @@ rmSync(root, { recursive: true, force: true });
       html.includes("stdout") &&
       html.includes("stderr") &&
       html.includes("model · AiU · tokens: not applicable") &&
+      html.includes('class="tag">attempt') &&
       html.includes('a.parse === "json"') &&
       html.includes("jsonHtml(a.preview, 0)"),
     true,

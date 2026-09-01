@@ -632,6 +632,7 @@ function render(s) {
       return \`<details class="command-run \${status}" \${index === runs.length - 1 ? "open" : ""}>
         <summary>
           <span class="caret">▸</span>
+          <span class="tag">attempt \${(r.attempt || 0) + 1}</span>
           <span class="command-state \${status}">\${status === "completed" ? "✓ completed" : status === "failed" ? "✗ failed" : status === "interrupted" ? "◇ completion not observed" : "◐ started"}</span>
           <span class="detail">\${esc(result)} · \${esc(duration(r.wallMs))}</span>
           <span class="grow"></span>
