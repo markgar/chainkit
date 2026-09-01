@@ -111,7 +111,7 @@ export function page() {
   .round { font-size: 10px; font-weight: 600; padding: 0 5px; border-radius: 4px;
            background: var(--background-color-muted, #f6f8fa); color: var(--muted);
            border: 1px solid var(--border-color-default, #d0d7de); }
-  .shead { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 5px; }
+  .shead { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 7px; }
   .sord { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 11px; }
   .criterion { display: flex; align-items: baseline; gap: 7px; margin: 1px 0 7px;
                color: var(--muted); font-size: 11px; line-height: 1.45; }
@@ -179,7 +179,8 @@ export function page() {
      ten minutes ago looked exactly as urgent as the one working now -- read, quite
      reasonably, as "why is that one highlighted?". Finished is plain; running is
      the accent. */
-  .sid { font-weight: 700; color: var(--accent, #0969da); }
+  .sid { font-size: 18px; line-height: 1.15; font-weight: 750; letter-spacing: .025em;
+         text-transform: uppercase; color: var(--accent, #0969da); }
   .stage.s-ran .sid { font-weight: 500; color: var(--text-color-default, #1f2328); }
   .say { margin: 6px 10px 8px 14px; padding: 7px 9px; border-radius: 6px; white-space: pre-wrap;
          background: var(--background-color-muted, #f6f8fa);
