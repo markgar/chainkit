@@ -138,7 +138,7 @@ Completion is optional. A successful chain with no top-level completion exits su
 
 A chain is a `.yaml` file (YAML because it takes comments, and the reasons behind a roster are worth writing down). A prompt is a `.md` file in a `prompts/` directory beside it; `{{artifact}}` is interpolated.
 
-`_events.jsonl` is append-only additive observability. Immediately after every stage, foreach-item, and chain completion check, Chainkit writes a generic `completion.checked` event with timestamp, scope, stage/iteration/round/attempt identity where applicable, and the bounded check result: exact command, status, exit code, and failure output. Raw provider JSONL, `_calls.jsonl`, and the final run record keep their existing roles. The runs canvas polls the event journal so a failed stage check is visible on its matching attempt before the final record exists; once written, that record remains authoritative.
+`_events.jsonl` is append-only additive observability. Completion contracts write generic `completion.checked` events with their bounded result. Every `run:` stage also writes `command.stage.started`, `.completed`, or `.failed` lifecycle events with stable sequence/stage/foreach/round/attempt identity, the bounded rendered command, timing and exit status, bounded stdout/stderr diagnostics, and generic artifact metadata plus a bounded preview when `produces` is declared. Stages without `produces` still retain their command output. Raw provider JSONL, `_calls.jsonl`, and the final run record keep their existing roles; the runs canvas merges the event journal while a run is live and uses the final record as durable enrichment when it appears.
 
 ## The project check
 

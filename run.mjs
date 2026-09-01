@@ -31,6 +31,7 @@ import { reduceCumulative } from "./kernel/cost.mjs";
 import { treeSnapshot, treeDelta, repositorySnapshot } from "./kernel/tree.mjs";
 import { runCompletion } from "./kernel/completion.mjs";
 import { makeSessionLedger } from "./kernel/session.mjs";
+import { serializeRecord } from "./kernel/record.mjs";
 
 const arg = (n, d) => {
   const i = process.argv.indexOf(`--${n}`);
@@ -268,6 +269,8 @@ writeFileSync(
       stages: stages.map((s) => ({
         id: s.id,
         ord: s.ord,
+        run: s.run ?? null,
+        timeoutMs: s.timeoutMs ?? null,
         model: s.model,
         effort: s.effort ?? null,
         // The LIST survives here, not a boolean. `tools` is a per-stage independent
@@ -342,6 +345,13 @@ function journalCall(stage, round, iter, attempt = 0) {
   }
   return callSeq;
 }
+function journalEvent(event) {
+  try {
+    appendFileSync(path.join(logRoot, "_events.jsonl"), JSON.stringify(event) + "\n");
+  } catch {
+    /* additive observability must never change run behavior */
+  }
+}
 function journalCompletion(scope, check, identity = {}) {
   const event = {
     type: "completion.checked",
@@ -358,11 +368,7 @@ function journalCompletion(scope, check, identity = {}) {
       ok: check.ok,
     },
   };
-  try {
-    appendFileSync(path.join(logRoot, "_events.jsonl"), JSON.stringify(event) + "\n");
-  } catch {
-    /* additive observability must never change run behavior */
-  }
+  journalEvent(event);
 }
 function journalSession(type, detail) {
   try {
@@ -387,7 +393,26 @@ async function executeOnce(stage, round = 0, iter = 0, attempt = 0, deterministi
     `→ ${stage.id}${iter ? ` [${iter}]` : ""}${round ? ` (round ${round})` : ""}${attempt ? ` (completion attempt ${attempt + 1})` : ""} … ${stage.run ? `$ ${stage.run}` : stage.model}${stage.tools ? " +tools" : ""}${stage.resume ? " +resume" : ""}${stage.resumeFrom ? ` +resume:${stage.resumeFrom}` : ""}\n`,
   );
   const res = stage.run
-    ? await runCommandStage({ stage, ctx, workDir, logRoot, round, iter })
+    ? await runCommandStage({
+        stage,
+        ctx,
+        workDir,
+        logRoot,
+        round,
+        iter,
+        attempt,
+        onLifecycle: (lifecycle) => {
+          journalEvent({
+            type: `command.stage.${lifecycle.phase}`,
+            timestamp: lifecycle.timestamp,
+            identity: { stage: stage.id, seq: invocationSeq, iter, round, attempt },
+            ...(lifecycle.command ? { command: lifecycle.command } : {}),
+            ...(Object.hasOwn(lifecycle, "artifact") ? { artifact: lifecycle.artifact } : {}),
+            ...(lifecycle.startedAt ? { startedAt: lifecycle.startedAt } : {}),
+            ...(lifecycle.result ? { result: lifecycle.result } : {}),
+          });
+        },
+      })
     : await runStage({
         stage,
         ctx,
@@ -445,6 +470,7 @@ async function executeOnce(stage, round = 0, iter = 0, attempt = 0, deterministi
     promptMode: res.promptMode ?? null,
     wallMs: res.wallMs ?? Date.now() - t0,
     rawPath: res.rawPath || null,
+    commandResult: res.commandResult || null,
     recoveredFromCalls: res.recoveredFromCalls ?? null,
     // WHICH tools a stage reached for, not just whether it had any. The parser
     // has always computed this and the record has always dropped it, so the one
@@ -1071,7 +1097,7 @@ const record = {
 // exactly where the reader looks or every finished run renders as still running.
 mkdirSync(path.join(resultsRoot, "chain-runs"), { recursive: true });
 const recPath = path.join(resultsRoot, "chain-runs", `${runId}.json`);
-writeFileSync(recPath, JSON.stringify(record, null, 2));
+writeFileSync(recPath, serializeRecord(record));
 
 console.log(`\n=== SUMMARY ===`);
 console.log(`  completed   ${completed ? "YES" : "NO"}`);

@@ -23,6 +23,7 @@ import {
   runHeadline,
 } from "./telemetry.mjs";
 import { page } from "./render.mjs";
+import { runCommandStage } from "../../kernel/stage.mjs";
 import vm from "node:vm";
 
 let pass = 0;
@@ -931,6 +932,362 @@ rmSync(root, { recursive: true, force: true });
   rmSync(liveRoot, { recursive: true, force: true });
 }
 
+// COMMAND STAGES. Their append-only lifecycle is the only live evidence available:
+// there is no model-call JSONL and the final record does not exist until the run ends.
+{
+  const commandRoot = mkdtempSync(path.join(tmpdir(), "ck-command-events-"));
+  const logs = path.join(commandRoot, "logs");
+  const ctx = { snapshot: () => ({}) };
+  const execute = async (stage) => {
+    const lifecycle = [];
+    const result = await runCommandStage({
+      stage: { timeoutMs: 5000, expects: null, ord: 1, ...stage },
+      ctx,
+      workDir: commandRoot,
+      logRoot: logs,
+      onLifecycle: (event) => lifecycle.push(event),
+    });
+    return { result, lifecycle };
+  };
+
+  const text = await execute({
+    id: "text-artifact",
+    run: "printf 'alpha\\nbeta\\n'",
+    parse: "text",
+    produces: "report",
+  });
+  eq(
+    "a successful text command emits started then completed",
+    text.lifecycle.map((event) => event.phase),
+    ["started", "completed"],
+  );
+  eq(
+    "a text artifact retains its generic type",
+    text.result.commandResult.artifact.shape.type,
+    "string",
+  );
+  eq("a text artifact records its line count", text.result.commandResult.artifact.lines, 2);
+  eq(
+    "a text artifact preview is readable text",
+    text.result.commandResult.artifact.preview,
+    "alpha\nbeta",
+  );
+
+  const json = await execute({
+    id: "json-artifact",
+    run: `printf '{"items":[1,2],"ok":true}'`,
+    parse: "json",
+    produces: "facts",
+  });
+  eq(
+    "a JSON artifact retains object shape",
+    json.result.commandResult.artifact.shape.type,
+    "object",
+  );
+  eq(
+    "a JSON artifact preview remains structural",
+    json.result.commandResult.artifact.preview.items,
+    [1, 2],
+  );
+
+  const plain = await execute({
+    id: "plain-output",
+    run: "printf 'plain output'",
+    parse: "text",
+    produces: null,
+  });
+  eq(
+    "a command without produces has no invented artifact",
+    plain.result.commandResult.artifact,
+    null,
+  );
+  eq(
+    "a command without produces still retains stdout",
+    plain.result.commandResult.stdout.preview,
+    "plain output",
+  );
+
+  const failed = await execute({
+    id: "failed-command",
+    run: "printf 'bad news' >&2; exit 7",
+    parse: "text",
+    produces: null,
+  });
+  eq("a failed command emits failed status", failed.result.commandResult.status, "failed");
+  eq("a failed command retains its exit code", failed.result.commandResult.exitCode, 7);
+  eq(
+    "a failed command retains bounded stderr",
+    failed.result.commandResult.stderr.preview,
+    "bad news",
+  );
+
+  const bounded = await execute({
+    id: "bounded-output",
+    run: `node -e "process.stdout.write('x'.repeat(13050))"`,
+    parse: "text",
+    produces: null,
+  });
+  eq(
+    "command stdout previews are bounded",
+    bounded.result.commandResult.stdout.preview.length,
+    12000,
+  );
+  eq(
+    "bounded command stdout is marked truncated",
+    bounded.result.commandResult.stdout.truncated,
+    true,
+  );
+
+  const broadJson = await execute({
+    id: "bounded-json",
+    run: `node -e "console.log(JSON.stringify(Array.from({length:30},()=>Array.from({length:30},()=>Array(30).fill('')))))"`,
+    parse: "json",
+    produces: "matrix",
+  });
+  eq(
+    "structural JSON previews stay inside their serialized bound",
+    JSON.stringify(broadJson.result.commandResult.artifact.preview).length <= 10000,
+    true,
+  );
+  eq(
+    "a structurally bounded JSON preview is marked truncated",
+    broadJson.result.commandResult.artifact.truncated,
+    true,
+  );
+
+  const deepJson = await execute({
+    id: "deep-json",
+    run: `node -e "process.stdout.write('['.repeat(20000) + '0' + ']'.repeat(20000))"`,
+    parse: "json",
+    produces: "deep",
+  });
+  eq("deep valid JSON still completes", deepJson.result.ok, true);
+  eq(
+    "deep valid JSON still emits terminal telemetry",
+    deepJson.lifecycle.map((event) => event.phase),
+    ["started", "completed"],
+  );
+  eq(
+    "deep JSON shape is reported without recursive traversal",
+    deepJson.result.commandResult.artifact.shape.type,
+    "array",
+  );
+
+  const parseFailure = await execute({
+    id: "parse-failure",
+    run: "printf 'not json'",
+    parse: "json",
+    produces: "facts",
+  });
+  eq(
+    "a parse failure retains the artifact declaration without claiming production",
+    parseFailure.result.commandResult.artifact.state,
+    "declared",
+  );
+  const shapeFailure = await execute({
+    id: "shape-failure",
+    run: `printf '{"pass":"yes"}'`,
+    parse: "json",
+    produces: "verdict",
+    expects: { pass: "boolean" },
+  });
+  eq(
+    "a rejected shaped value is identified as a candidate, not a produced artifact",
+    shapeFailure.result.commandResult.artifact.state,
+    "candidate",
+  );
+
+  const root = path.join(commandRoot, "canvas");
+  const id = "commands__live__2026-01-01T00-00-00";
+  const dir = path.join(root, "results", "chain-runs", "logs", id);
+  mkdirSync(dir, { recursive: true });
+  const declarations = [
+    { id: "text-artifact", ord: 1, run: "text", parse: "text", produces: "report" },
+    { id: "json-artifact", ord: 2, run: "json", parse: "json", produces: "facts" },
+    { id: "plain-output", ord: 3, run: "plain", parse: "text", produces: null },
+    { id: "failed-command", ord: 4, run: "fail", parse: "text", produces: null },
+    {
+      id: "foreach-command",
+      ord: 5,
+      run: "foreach",
+      parse: "text",
+      produces: "item",
+      inForeach: true,
+    },
+  ];
+  writeFileSync(
+    path.join(dir, "_chain.json"),
+    JSON.stringify({ stages: declarations, foreach: { as: "item" } }),
+  );
+  const fixtures = [
+    { seq: 1, id: "text-artifact", result: text.result.commandResult },
+    { seq: 2, id: "json-artifact", result: json.result.commandResult },
+    { seq: 3, id: "plain-output", result: plain.result.commandResult },
+    { seq: 4, id: "failed-command", result: failed.result.commandResult },
+    { seq: 5, id: "foreach-command", iter: 1, result: text.result.commandResult },
+    { seq: 6, id: "foreach-command", iter: 2, result: plain.result.commandResult },
+  ];
+  writeFileSync(
+    path.join(dir, "_calls.jsonl"),
+    fixtures
+      .map(({ seq, id: stage, iter = 0 }) =>
+        JSON.stringify({ seq, id: stage, iter, round: 0, attempt: 0 }),
+      )
+      .join("\n") + "\n",
+  );
+  writeFileSync(
+    path.join(dir, "_events.jsonl"),
+    fixtures
+      .flatMap(({ seq, id: stage, iter = 0, result }) => [
+        {
+          type: "command.stage.started",
+          timestamp: result.startedAt,
+          identity: { stage, seq, iter, round: 0, attempt: 0 },
+          command: result.command,
+          artifact: result.artifact
+            ? { name: result.artifact.name, parse: result.artifact.parse }
+            : null,
+          startedAt: result.startedAt,
+        },
+        {
+          type: result.ok ? "command.stage.completed" : "command.stage.failed",
+          timestamp: result.finishedAt,
+          identity: { stage, seq, iter, round: 0, attempt: 0 },
+          result,
+        },
+      ])
+      .map((event) => JSON.stringify(event))
+      .join("\n") + "\n",
+  );
+
+  const live = readRun(dir, root);
+  const stage = (name, iter = 0) =>
+    live.stages.find((row) => row.id === name && (row.iter || 0) === iter);
+  eq("command lifecycle renders without a final record", live.summary, null);
+  eq("a live successful command is completed", stage("text-artifact").status, "completed");
+  eq(
+    "a live JSON artifact reaches the generic structural renderer",
+    stage("json-artifact").commandRuns[0].artifact.preview.ok,
+    true,
+  );
+  eq(
+    "a live command without produces keeps its output",
+    stage("plain-output").commandRuns[0].stdout.preview,
+    "plain output",
+  );
+  eq("a live failed command is visibly failed", stage("failed-command").status, "failed");
+  eq(
+    "foreach command stages remain isolated by iteration",
+    live.stages.filter((row) => row.id === "foreach-command").map((row) => row.iter),
+    [1, 2],
+  );
+  eq(
+    "command stages preserve journal execution order",
+    live.stages.filter((row) => row.commandRuns?.length).map((row) => `${row.id}/${row.iter || 0}`),
+    [
+      "text-artifact/0",
+      "json-artifact/0",
+      "plain-output/0",
+      "failed-command/0",
+      "foreach-command/1",
+      "foreach-command/2",
+    ],
+  );
+  eq("command stages never claim measured model cost", stage("text-artifact").aiuKnown, false);
+
+  // A final record is authoritative when an event append was interrupted after the
+  // started line, and can also restore command rounds whose event never landed.
+  const finalId = "commands__final__2026-01-01T00-00-00";
+  const finalDir = path.join(root, "results", "chain-runs", "logs", finalId);
+  mkdirSync(finalDir, { recursive: true });
+  writeFileSync(
+    path.join(finalDir, "_chain.json"),
+    JSON.stringify({
+      stages: [{ id: "loop-command", ord: 1, run: "loop", parse: "text", inLoop: true }],
+    }),
+  );
+  writeFileSync(
+    path.join(finalDir, "_calls.jsonl"),
+    [
+      { seq: 1, id: "loop-command", iter: 0, round: 1, attempt: 0 },
+      { seq: 2, id: "loop-command", iter: 0, round: 2, attempt: 0 },
+    ]
+      .map((event) => JSON.stringify(event))
+      .join("\n") + "\n",
+  );
+  writeFileSync(
+    path.join(finalDir, "_events.jsonl"),
+    JSON.stringify({
+      type: "command.stage.started",
+      timestamp: text.result.commandResult.startedAt,
+      identity: { stage: "loop-command", seq: 1, iter: 0, round: 1, attempt: 0 },
+      command: text.result.commandResult.command,
+      artifact: null,
+      startedAt: text.result.commandResult.startedAt,
+    }) + "\n",
+  );
+  mkdirSync(path.join(root, "results", "chain-runs"), { recursive: true });
+  writeFileSync(
+    path.join(root, "results", "chain-runs", `${finalId}.json`),
+    JSON.stringify({
+      completed: true,
+      stageLog: [
+        {
+          id: "loop-command",
+          round: 1,
+          iter: 0,
+          attempt: 0,
+          commandResult: text.result.commandResult,
+        },
+        {
+          id: "loop-command",
+          round: 2,
+          iter: 0,
+          attempt: 0,
+          commandResult: plain.result.commandResult,
+        },
+      ],
+    }),
+  );
+  const final = readRun(finalDir, root);
+  eq(
+    "the final record completes a lifecycle that only journaled started",
+    final.stages.find((row) => row.round === 1).status,
+    "completed",
+  );
+  eq(
+    "the final record restores command rounds missing from the event journal",
+    final.stages.filter((row) => row.id === "loop-command").map((row) => row.round),
+    [1, 2],
+  );
+
+  const orphanId = "commands__orphan__2026-01-01T00-00-00";
+  const orphanDir = path.join(root, "results", "chain-runs", "logs", orphanId);
+  mkdirSync(orphanDir, { recursive: true });
+  writeFileSync(
+    path.join(orphanDir, "_chain.json"),
+    JSON.stringify({ stages: [{ id: "orphan", ord: 1, run: "sleep", timeoutMs: 1000 }] }),
+  );
+  writeFileSync(
+    path.join(orphanDir, "_events.jsonl"),
+    JSON.stringify({
+      type: "command.stage.started",
+      timestamp: "2026-01-01T00:00:00Z",
+      identity: { stage: "orphan", seq: 1, iter: 0, round: 0, attempt: 0 },
+      command: { text: "sleep", characters: 5, truncated: false },
+      artifact: null,
+      startedAt: "2026-01-01T00:00:00Z",
+    }) + "\n",
+  );
+  eq(
+    "an orphaned started event expires instead of reporting live forever",
+    readRun(orphanDir, root).stages[0].status,
+    "interrupted",
+  );
+
+  rmSync(commandRoot, { recursive: true, force: true });
+}
+
 // TWO ROOTS. Run records live beside the CHAIN that produced them, so a repo has
 // more than one results dir: the project's `.chainkit/` and the vendored engine's
 // own. Which one a run landed in is an artifact of which chain file was used, not
@@ -1133,6 +1490,17 @@ rmSync(root, { recursive: true, force: true });
     html.includes("completion-failures") &&
       html.includes("max-height: 180px") &&
       html.includes("check.output || check.tail"),
+    true,
+  );
+  eq(
+    "command cards expose command, result, artifact, diagnostics, and absent metrics",
+    html.includes("command-runs") &&
+      html.includes("Produced artifact") &&
+      html.includes("stdout") &&
+      html.includes("stderr") &&
+      html.includes("model · AiU · tokens: not applicable") &&
+      html.includes('a.parse === "json"') &&
+      html.includes("jsonHtml(a.preview, 0)"),
     true,
   );
   eq(
