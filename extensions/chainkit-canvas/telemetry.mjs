@@ -348,12 +348,16 @@ function readCall(file, label) {
   let nanoAiu = null;
   let model = "";
   let text = "";
+  let prompt = null;
   let done = false;
   const pending = new Map();
 
   for (const ev of events) {
     const d = ev.data || {};
     switch (ev.type) {
+      case "user.message":
+        if (prompt == null && typeof d.content === "string") prompt = d.content;
+        break;
       case "tool.execution_start":
         pending.set(d.toolCallId, steps.length);
         steps.push({
@@ -471,6 +475,7 @@ function readCall(file, label) {
     mtime,
     toolCount: steps.filter((s) => s.kind === "tool").length,
     finalText: text,
+    prompt,
   };
 }
 
