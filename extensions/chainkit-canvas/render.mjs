@@ -79,9 +79,16 @@ export function page() {
   .spend { margin: 4px 0 16px; }
   .split { height: 8px; border-radius: 4px; overflow: hidden; display: flex;
            border: 1px solid var(--border-color-default, #d0d7de); }
-  .split i { display: block; height: 100%; }
+  .split i { display: block; height: 100%; transition: opacity .12s ease, filter .12s ease, box-shadow .12s ease; }
+  .spend.has-spend-active .split [data-spend-key] { opacity: .3; filter: saturate(.65); }
+  .spend.has-spend-active .split [data-spend-key].spend-active {
+    opacity: 1; filter: brightness(1.18) saturate(1.25);
+    box-shadow: inset 0 0 0 1px var(--color-white, #fff);
+  }
   .legend { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 6px; font-size: 11px; color: var(--muted); }
-  .legend span b { font-weight: 600; color: var(--text-color-default, #1f2328); }
+  .legend-item { border-radius: 3px; cursor: default; }
+  .legend-item:focus-visible { outline: 2px solid var(--color-focus-outline, #0969da); outline-offset: 2px; }
+  .legend-item b { font-weight: 600; color: var(--text-color-default, #1f2328); }
   .swatch { width: 8px; height: 8px; border-radius: 2px; display: inline-block; margin-right: 4px; }
 
   /* A stage: its header, then one row per round. Drawn as a filled card because a
@@ -270,7 +277,27 @@ const el = {
     if (painted.cards !== h) document.getElementById("cards").innerHTML = painted.cards = h;
   },
   set spend(h) {
-    if (painted.spend !== h) document.getElementById("spend").innerHTML = painted.spend = h;
+    if (painted.spend !== h) {
+      const focusKey = spendEl.contains(document.activeElement)
+        ? document.activeElement.dataset.spendKey
+        : null;
+      spendEl.innerHTML = painted.spend = h;
+      if (
+        hoveredSpendKey != null &&
+        ![...spendEl.querySelectorAll("[data-spend-key]")].some(
+          (item) => item.dataset.spendKey === hoveredSpendKey,
+        )
+      ) {
+        hoveredSpendKey = null;
+      }
+      const replacement = focusKey == null
+        ? null
+        : [...spendEl.querySelectorAll(".legend-item[data-spend-key]")]
+            .find((item) => item.dataset.spendKey === focusKey);
+      if (replacement) replacement.focus({ preventScroll: true });
+      else if (focusKey != null) focusedSpendKey = null;
+      applySpendEmphasis();
+    }
   },
   set body(h) {
     if (painted.body !== h) document.getElementById("body").innerHTML = painted.body = h;
@@ -375,6 +402,65 @@ const hue = (i) => PALETTE[i % PALETTE.length];
 
 function card(k, v, extra="") { return \`<div class="card"><div class="k">\${k}</div><div class="v">\${v}</div>\${extra}</div>\`; }
 
+// Encode code points rather than putting raw stage ids into selectors. The key is
+// stable across refreshes, attribute-safe, and still works for arbitrary Unicode.
+const spendKey = (id) =>
+  "s-" + [...String(id ?? "")].map((char) => char.codePointAt(0).toString(36)).join(".");
+const spendHtml = (stages, total, color) =>
+  \`<div class="split">\${stages.map((stage) => {
+    const key = spendKey(stage.id);
+    return \`<i data-spend-key="\${key}" style="width:\${(stage.aiu / total) * 100}%;background:\${color(stage.id)}" title="\${esc(stage.id)}"></i>\`;
+  }).join("")}</div>
+   <div class="legend">\${stages.map((stage) => {
+    const key = spendKey(stage.id);
+    return \`<span class="legend-item" tabindex="0" data-spend-key="\${key}" aria-label="Highlight spend for \${esc(stage.id)}"><i class="swatch" style="background:\${color(stage.id)}"></i>\${esc(stage.id)} <b>\${stage.aiu.toFixed(2)}</b> (\${Math.round((stage.aiu / total) * 100)}%)</span>\`;
+  }).join("")}</div>\`;
+
+let hoveredSpendKey = null;
+let focusedSpendKey = null;
+const spendEl = document.getElementById("spend");
+const legendSpendItem = (target) => {
+  const item = target?.closest?.(".legend-item[data-spend-key]");
+  return item && spendEl.contains(item) ? item : null;
+};
+function applySpendEmphasis() {
+  const key = hoveredSpendKey ?? focusedSpendKey;
+  const items = [...spendEl.querySelectorAll("[data-spend-key]")];
+  const linked = key == null ? [] : items.filter((item) => item.dataset.spendKey === key);
+  spendEl.classList.toggle("has-spend-active", linked.length > 0);
+  for (const item of items) {
+    item.classList.toggle("spend-active", key != null && item.dataset.spendKey === key);
+  }
+}
+spendEl.addEventListener("pointerover", (event) => {
+  const item = legendSpendItem(event.target);
+  if (item) {
+    hoveredSpendKey = item.dataset.spendKey;
+    applySpendEmphasis();
+  }
+});
+spendEl.addEventListener("pointerout", (event) => {
+  const item = legendSpendItem(event.target);
+  if (!item) return;
+  const next = legendSpendItem(event.relatedTarget);
+  if (next === item) return;
+  hoveredSpendKey = next?.dataset.spendKey ?? null;
+  applySpendEmphasis();
+});
+spendEl.addEventListener("focusin", (event) => {
+  const item = legendSpendItem(event.target);
+  if (item) {
+    focusedSpendKey = item.dataset.spendKey;
+    applySpendEmphasis();
+  }
+});
+spendEl.addEventListener("focusout", (event) => {
+  const item = legendSpendItem(event.target);
+  if (!item) return;
+  focusedSpendKey = legendSpendItem(event.relatedTarget)?.dataset.spendKey ?? null;
+  applySpendEmphasis();
+});
+
 function render(s) {
   const run = s.run;
   // Adopt the server's view on first paint so the selector reflects what this
@@ -444,12 +530,7 @@ function render(s) {
       aiu: run.stages.filter((s) => s.id === id).reduce((n, s) => n + s.aiu, 0),
     }))
     .filter((s) => s.aiu > 0);
-  el.spend = tot > 0
-    ? \`<div class="split">\${byStage.map((s) =>
-         \`<i style="width:\${(s.aiu / tot) * 100}%;background:\${idHue(s.id)}" title="\${esc(s.id)}"></i>\`).join("")}</div>
-       <div class="legend">\${byStage.map((s) =>
-         \`<span><i class="swatch" style="background:\${idHue(s.id)}"></i>\${esc(s.id)} <b>\${s.aiu.toFixed(2)}</b> (\${Math.round((s.aiu / tot) * 100)}%)</span>\`).join("")}</div>\`
-    : "";
+  el.spend = tot > 0 ? spendHtml(byStage, tot, idHue) : "";
 
   // While a run is live and the user hasn't pinned a call, follow the last one --
   // that's the call currently being written, so the view tracks the work.

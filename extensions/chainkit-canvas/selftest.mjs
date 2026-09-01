@@ -976,6 +976,150 @@ rmSync(root, { recursive: true, force: true });
     syntaxError = e.message;
   }
   eq("the page's inline script parses", syntaxError, null);
+
+  // The spend legend is an interactive index into the bar. Exercise the emitted
+  // browser helpers so this proves behavior rather than only matching source text.
+  const spendFrom = scripts[0].indexOf("const spendKey =");
+  const spendTo = scripts[0].indexOf("\nlet hoveredSpendKey =", spendFrom);
+  const spendCtx = {
+    out: null,
+    esc: (s) =>
+      String(s ?? "").replace(
+        /[&<>"]/g,
+        (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c],
+      ),
+  };
+  vm.createContext(spendCtx);
+  new vm.Script(
+    scripts[0].slice(spendFrom, spendTo) + "\nout = { spendKey, spendHtml };",
+  ).runInContext(spendCtx);
+  const unusualStage = 'odd stage/"<& 😈';
+  const unusualKey = spendCtx.out.spendKey(unusualStage);
+  const spendMarkup = spendCtx.out.spendHtml(
+    [
+      { id: unusualStage, aiu: 3 },
+      { id: "plain", aiu: 1 },
+    ],
+    4,
+    (id) => (id === unusualStage ? "#123456" : "#abcdef"),
+  );
+  const spendKeys = [...spendMarkup.matchAll(/data-spend-key="([^"]+)"/g)].map((m) => m[1]);
+  eq("each legend item shares a data-safe key with its matching spend segment", spendKeys, [
+    unusualKey,
+    spendCtx.out.spendKey("plain"),
+    unusualKey,
+    spendCtx.out.spendKey("plain"),
+  ]);
+  eq("unusual stage ids do not become selector fragments", /^[a-z0-9.-]+$/.test(unusualKey), true);
+  eq(
+    "unusual stage ids remain escaped in the spend tooltip",
+    spendMarkup.includes('title="odd stage/&quot;&lt;&amp; 😈"'),
+    true,
+  );
+  eq(
+    "each legend item is keyboard focusable",
+    (spendMarkup.match(/class="legend-item" tabindex="0"/g) || []).length,
+    2,
+  );
+  eq(
+    "active spend styling dims nonmatching segments and restores the selected segment",
+    html.includes(".spend.has-spend-active .split [data-spend-key] { opacity: .3;") &&
+      html.includes("[data-spend-key].spend-active {\n    opacity: 1;"),
+    true,
+  );
+
+  class FakeClassList {
+    constructor() {
+      this.names = new Set();
+    }
+    toggle(name, force) {
+      if (force) this.names.add(name);
+      else this.names.delete(name);
+      return this.names.has(name);
+    }
+    contains(name) {
+      return this.names.has(name);
+    }
+  }
+  class FakeSpendItem {
+    constructor(kind, key) {
+      this.kind = kind;
+      this.dataset = { spendKey: key };
+      this.classList = new FakeClassList();
+    }
+    closest(selector) {
+      return this.kind === "legend" && selector === ".legend-item[data-spend-key]" ? this : null;
+    }
+  }
+  const segmentA = new FakeSpendItem("segment", unusualKey);
+  const segmentB = new FakeSpendItem("segment", spendCtx.out.spendKey("plain"));
+  const legendA = new FakeSpendItem("legend", unusualKey);
+  const legendB = new FakeSpendItem("legend", spendCtx.out.spendKey("plain"));
+  const spendItems = [segmentA, segmentB, legendA, legendB];
+  const spendListeners = {};
+  const fakeSpend = {
+    classList: new FakeClassList(),
+    contains: (item) => spendItems.includes(item),
+    querySelectorAll: () => spendItems,
+    addEventListener: (name, listener) => {
+      spendListeners[name] = listener;
+    },
+  };
+  const interactionCtx = {
+    document: {
+      getElementById: (id) => (id === "spend" ? fakeSpend : null),
+    },
+    out: null,
+  };
+  const interactionFrom = scripts[0].indexOf("let hoveredSpendKey =");
+  const interactionTo = scripts[0].indexOf("\nfunction render(", interactionFrom);
+  vm.createContext(interactionCtx);
+  new vm.Script(
+    scripts[0].slice(interactionFrom, interactionTo) +
+      "\nout = { applySpendEmphasis, legendSpendItem };",
+  ).runInContext(interactionCtx);
+
+  spendListeners.pointerover({ target: legendA });
+  eq(
+    "hover activates the linked legend item and spend segment",
+    [legendA.classList.contains("spend-active"), segmentA.classList.contains("spend-active")],
+    [true, true],
+  );
+  eq(
+    "hover leaves nonmatching segments de-emphasized",
+    [fakeSpend.classList.contains("has-spend-active"), segmentB.classList.contains("spend-active")],
+    [true, false],
+  );
+  spendListeners.pointerout({ target: legendA, relatedTarget: null });
+  eq(
+    "pointer exit restores the full spend bar",
+    [fakeSpend.classList.contains("has-spend-active"), segmentA.classList.contains("spend-active")],
+    [false, false],
+  );
+
+  spendListeners.focusin({ target: legendB });
+  eq(
+    "keyboard focus activates the linked legend item and spend segment",
+    [legendB.classList.contains("spend-active"), segmentB.classList.contains("spend-active")],
+    [true, true],
+  );
+  spendListeners.focusout({ target: legendB, relatedTarget: null });
+  eq(
+    "focus exit restores the full spend bar",
+    [fakeSpend.classList.contains("has-spend-active"), segmentB.classList.contains("spend-active")],
+    [false, false],
+  );
+  eq(
+    "spend emphasis is delegated from the persistent container",
+    ["pointerover", "pointerout", "focusin", "focusout"].every((name) => spendListeners[name]),
+    true,
+  );
+  eq(
+    "spend repaint reapplies active state after replacing markup",
+    /set spend\(h\)[\s\S]*applySpendEmphasis\(\);/.test(scripts[0]),
+    true,
+  );
+
   eq("the page renders the non-model channels", html.includes("chans"), true);
   eq(
     "declared completion is visible as an upfront exit criterion",
