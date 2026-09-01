@@ -163,6 +163,28 @@ eq(
   path.join("vendor", "chainkit"),
 );
 eq(
+  "a designer running from a vendored extension resolves the host's vendored kernel",
+  path.relative(
+    tmp,
+    engineRoot(null, {
+      base: path.join(tmp, ".github", "extensions", "chainkit-designer"),
+    }),
+  ),
+  path.join("vendor", "chainkit"),
+);
+const standalone = path.join(tmp, "standalone");
+mk("standalone/kernel/config.mjs", "");
+eq(
+  "a designer running inside the source repository resolves its direct kernel",
+  path.relative(
+    standalone,
+    engineRoot(null, {
+      base: path.join(standalone, "extensions", "chainkit-designer"),
+    }),
+  ),
+  "",
+);
+eq(
   "a chain is resolvable by bare name, from whichever root holds it",
   path.relative(tmp, resolveChainFile(roots, "chains/project-thing")),
   path.join(".chainkit", "chains", "project-thing.yaml"),

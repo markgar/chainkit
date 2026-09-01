@@ -18,16 +18,33 @@ import path from "node:path";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "..", "..", "..");
 
+function ancestors(start) {
+  const out = [];
+  let dir = path.resolve(start);
+  for (;;) {
+    out.push(dir);
+    const parent = path.dirname(dir);
+    if (parent === dir) return out;
+    dir = parent;
+  }
+}
+
 // TWO DIFFERENT ROOTS, and conflating them is the bug. The ENGINE root holds
 // `kernel/` -- it is vendored, replaced wholesale, and there is exactly one. The
 // CHAIN roots hold chain files -- `.chainkit/` is the processes this repo runs and
 // `vendor/chainkit/` is the engine's own examples, and both are real. The designer
 // validates a chain from either root using the one engine.
 export function engineRoot(workspacePath, { base = repoRoot } = {}) {
-  for (const b of [base, workspacePath, process.cwd()]) {
+  const seen = new Set();
+  for (const b of [base, workspacePath, process.cwd(), here]) {
     if (!b) continue;
-    const cand = path.join(b, "vendor", "chainkit");
-    if (existsSync(path.join(cand, "kernel"))) return cand;
+    for (const root of ancestors(b)) {
+      for (const cand of [root, path.join(root, "vendor", "chainkit")]) {
+        if (seen.has(cand)) continue;
+        seen.add(cand);
+        if (existsSync(path.join(cand, "kernel", "config.mjs"))) return cand;
+      }
+    }
   }
   return path.join(base, "vendor", "chainkit");
 }
