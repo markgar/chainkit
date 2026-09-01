@@ -48,7 +48,7 @@ eq(
   true,
 );
 eq("a stage's declared key contract is shown", html.includes("declared key contract"), true);
-eq("a stage's deterministic completion rule is shown", html.includes("completion · max"), true);
+eq("a stage's deterministic completion rule is shown", html.includes("completion ·"), true);
 
 // ---------------------------------------------------------------------------
 // THE READ SIDE (design.mjs). This is where the panel's failures actually live,

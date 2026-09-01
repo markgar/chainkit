@@ -1,6 +1,6 @@
 # chainkit
 
-A generic engine for running **configured chains of model stages**. The kernel calls the CLI, renders prompts, gathers telemetry, records the run, and runs the declared gate. **Which** models, in **which** order, with **which** prompts is config.
+A generic engine for running **configured chains of model stages**. The kernel calls the CLI, renders prompts, gathers telemetry, records the run, and enforces optional completion contracts. **Which** models, in **which** order, with **which** prompts is config.
 
 Adding a stage is a config edit, not a code change.
 
@@ -47,7 +47,7 @@ When a command exists only to decide whether a model stage has finished its own 
   resume: true
   completion:
     run: pnpm test && pnpm check
-    max: 3
+    attempts: 3
 ```
 
 Chainkit appends this requirement to the stage's initial prompt, then runs the command independently after every turn. A failure is captured and sent back to the same stage; with `resume: true`, the same CLI conversation continues with the exact error. The stage cannot finish until the command passes. It halts on the declared bound, on a repeated failure with no file change, or if the supposedly read-only completion command changes the repository, index, or HEAD.
@@ -71,36 +71,38 @@ The file is written into the stage's own log directory on every path, including 
 
 It is also the honest way to declare a deterministic **write**. A model stage with `tools: false` halts the run if the tree moves, because the config claimed it only reasons; a `run` stage is exempt, since writing is its job and its command is stated in the config in full — "what may this change" is answered by reading it, not by trusting a flag.
 
-Control flow is explicit and bounded: stages run in order; `loop` repeats a subset until an artifact field is true; stage completion retries the responsible agent until a command passes; and a repairable final gate retries configured integration stages against the same deterministic command.
+Control flow is explicit and bounded: stages run in order; `loop` repeats a subset until an artifact field is true; and the same optional `completion` contract judges an agent stage, each `foreach` item, or the assembled chain. `attempts` always means total checks, including the initial check. Agent retries automatically resume the owning stage; composite retries require ordinary stages under `repair.stages`.
 
-**Declared position decides when a linear stage runs.** A stage that is neither a loop nor a fan-out member runs in the slot its position in `stages` puts it — before the blocks, between them, or after. This is what makes a post-fan-out step (normalise the tree, collect a report, commit the result) expressible, and it is why the gate never has to mutate anything itself.
+**Declared position decides when a linear stage runs.** A stage that is neither a loop nor a fan-out member runs in the slot its position in `stages` puts it — before the blocks, between them, or after. This makes a post-fan-out transformation explicit instead of hiding mutation inside a completion judge.
 
-**A loop that never reaches its condition halts the run.** `until` is the chain's own statement of when the loop's output is fit to use, so exhausting `max` without reaching it is a failed precondition, not a lap counter running out — and continuing spends everything downstream (typically a fan-out, at many times the loop's cost) on an artifact the chain's own reviewer rejected. Set `onExhausted: continue` for the case where continuing is right: a loop whose reviewer is **advisory** because something objective follows it, as in [03-bounded-loop](examples/03-bounded-loop/), where the gate rather than the reviewer decides. An unsatisfied loop is recorded as unsatisfied either way, and blocks `delivered` either way. The key is rejected on a `foreach`'s inner loop, where that element's gate already runs next and stopping early would discard it.
+**A loop that never reaches its condition halts the run.** `until` is the chain's own statement of when the loop's output is fit to use, so exhausting `max` without reaching it is a failed precondition, not a lap counter running out. Set `onExhausted: continue` when an objective completion command follows and should decide. `loop.until` remains artifact-driven control flow; it is not a completion check.
 
-Repository-specific refusals belong in `preflight`, where they run after Chainkit's own git/base checks and before any model spend:
+The worktree must always be a clean git repository with a base commit. This built-in preflight cannot be disabled. Repository-specific refusals belong in `requires`; it runs after those built-in checks but before logs or model spend, may interpolate only scalar literal seeds, cannot repair, and may not mutate the repository:
 
 ```yaml
-preflight:
-  run: test -z "$(git status --porcelain)"
+requires:
+  run: test "{{target}}" = supported
 ```
 
-The final gate remains a string for simple chains. A chain that can repair integration failures may name ordinary stages to run before retrying the exact same command:
+Composite completion uses the same shape at `foreach.completion` and top-level `completion`:
 
 ```yaml
-gate:
+completion:
   run: pnpm check
+  attempts: 2
   repair:
     stages: [integration-fix]
-    max: 2
 ```
 
-Chainkit appends the failed command and its bounded output to each repair stage automatically. The chain author does not declare a synthetic feedback artifact; artifacts remain domain data passed between stages. The command, never the model, decides whether the run is clean.
+Chainkit appends the failed command and bounded output to each repair stage automatically, then reruns the exact rendered command. Repair stages are isolated from normal scheduling and artifact production. A successful chain repair is committed before verification is recorded.
+
+Completion is optional. A successful chain with no top-level completion exits successfully as **completed / unverified** and can never be `delivered`. Delivery additionally requires a passing declared chain completion, a non-empty diff, and intact repository identity.
 
 ## Layout
 
     run.mjs              the driver
     models.mjs           probe the CLI for which model ids it actually accepts
-    check.mjs            the whole gate: format, lint, deadcode, every selftest
+    check.mjs            the whole project check: format, lint, deadcode, every selftest
     selftest.mjs         deterministic behaviour gate — run after any kernel change
     kernel/
       config.mjs         load + STATIC validation (fails free, before any spend)
@@ -119,7 +121,7 @@ Chainkit appends the failed command and its bounded output to each repair stage 
 
 A chain is a `.yaml` file (YAML because it takes comments, and the reasons behind a roster are worth writing down). A prompt is a `.md` file in a `prompts/` directory beside it; `{{artifact}}` is interpolated.
 
-## The gate
+## The project check
 
     node check.mjs        (or `pnpm chainkit:check` from the host repo)
 
@@ -138,7 +140,7 @@ The selftests are the load-bearing part: the static checks check shape, the self
 
 A stage names its model as a bare string, and until it is dispatched nothing checks it. For a stage late in a fan-out that means a typo is discovered _after_ every earlier stage has been paid for. `kernel/models.mjs` carries a roster of ids the CLI is known to accept, and `--validate-only` warns (with a nearest-match suggestion) about anything not in it.
 
-It is a **spell-check, not a gate**, and that is deliberate: chainkit does not own the list. `copilot` does, the set moves as models ship and retire, and it varies by account and org. A hard allowlist would eventually reject a chain naming a model that is real and simply newer than this file — so an unknown id warns and the run proceeds. A stale roster costs a spurious warning; a roster trusted as a gate would block working chains.
+It is a **spell-check, not a completion contract**, and that is deliberate: chainkit does not own the list. `copilot` does, the set moves as models ship and retire, and it varies by account and org. A hard allowlist would eventually reject a chain naming a model that is real and simply newer than this file — so an unknown id warns and the run proceeds. A stale roster costs a spurious warning; a roster trusted as a gate would block working chains.
 
 The CLI has no enumerate command (`/model` is an interactive picker; there is no `--list`), so the roster is refreshed by asking the binary one id at a time:
 
@@ -165,7 +167,7 @@ Each directory is self-contained: the chain, every prompt it uses, and a README 
 
 ## What it deliberately does NOT have
 
-**Typed gates.** Domain-aware checks — telling an environment failure from a code failure, proving a test is red before it is built against, vetoing an acceptance command of the wrong shape — are worth having, and they are typed to a specific chain's artifacts. A chain that needs one gets one; none of them are hoisted into the kernel, because the moment the kernel understands what a stage means, "adding a stage is config" stops being true.
+**Typed completion kinds.** Domain-aware checks are worth having, but they remain commands configured against a chain's artifacts. None are hoisted into the kernel, because the moment the kernel understands what a stage means, "adding a stage is config" stops being true.
 
 **Branching.** Control flow is two things: stages run in order, and one bounded loop repeats a subset until a named field is true. There is no `if` and no stage that decides what runs next.
 

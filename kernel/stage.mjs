@@ -26,6 +26,20 @@ import { spawnSync } from "node:child_process";
 import { complete, lastErrorLine } from "./providers.mjs";
 import { render, readPath } from "./context.mjs";
 
+function renderCompletionPreview(template, ctx, produced) {
+  if (!produced) return render(template, ctx);
+  const deferred = [];
+  const masked = template.replace(/\{\{\s*([\w.-]+)\s*\}\}/g, (match, name) => {
+    if (String(name).split(".")[0] !== produced) return match;
+    const token = `__CHAINKIT_DEFERRED_COMPLETION_${deferred.length}__`;
+    deferred.push({ token, match });
+    return token;
+  });
+  let preview = render(masked, ctx);
+  for (const { token, match } of deferred) preview = preview.replaceAll(token, match);
+  return preview;
+}
+
 // Pull a JSON object out of a model's prose. Models reliably wrap JSON in fences or
 // preface it with a sentence, and treating that as a parse failure would throw away
 // a good answer over formatting.
@@ -223,7 +237,7 @@ function composeStagePrompt(
         `\`${completionCommand}\``,
         "",
         "Run it yourself and fix every failure before returning. Chainkit will run it independently",
-        `after your turn and resume this stage if it is still red (maximum ${stage.completion.max} attempt(s)).`,
+        `after your turn and resume this stage if it is still red (${stage.completion.attempts} total attempt(s), including this one).`,
       ].join("\n")
     : "";
   const failedCheck = deterministicFailure
@@ -236,8 +250,8 @@ function composeStagePrompt(
         "Repair the repository, run the check yourself, and do not return until it passes.",
         "",
         `Command: \`${deterministicFailure.command}\``,
-        deterministicFailure.attempt && deterministicFailure.max
-          ? `Attempt: ${deterministicFailure.attempt}/${deterministicFailure.max}`
+        deterministicFailure.attempt && (deterministicFailure.attempts || deterministicFailure.max)
+          ? `Attempt: ${deterministicFailure.attempt}/${deterministicFailure.attempts || deterministicFailure.max}`
           : "",
         "",
         "```text",
@@ -265,7 +279,9 @@ export async function runStage({
   // render() THROWS on a placeholder no stage produced. That is deliberate: a
   // prompt that silently loses its spec section still looks well-formed and still
   // returns a plausible answer, and nothing downstream can tell.
-  const completionCommand = stage.completion ? render(stage.completion.run, ctx) : null;
+  const completionCommand = stage.completion
+    ? renderCompletionPreview(stage.completion.run, ctx, stage.produces)
+    : null;
   const prompt = composeStagePrompt(
     stage,
     render(template, ctx),
@@ -608,19 +624,19 @@ export function selfTest() {
   const CASES = [];
 
   const completionPrompt = composeStagePrompt(
-    { parse: "text", completion: { run: "pnpm check", max: 3 } },
+    { parse: "text", completion: { run: "pnpm check", attempts: 3 } },
     "Do the work.",
   );
   CASES.push([
     "the initial model prompt names its enforced completion command",
     completionPrompt.includes("pnpm check") &&
       completionPrompt.includes("Run it yourself") &&
-      completionPrompt.includes("maximum 3 attempt(s)"),
+      completionPrompt.includes("3 total attempt(s)"),
   ]);
   CASES.push([
     "the initial completion instruction uses the rendered command",
     composeStagePrompt(
-      { parse: "text", completion: { run: "pnpm test {{chunk.id}}", max: 2 } },
+      { parse: "text", completion: { run: "pnpm test {{chunk.id}}", attempts: 2 } },
       "Build it.",
       null,
       "pnpm test c7",
@@ -629,7 +645,7 @@ export function selfTest() {
   const retryPrompt = composeStagePrompt({ parse: "text" }, "Repair.", {
     command: "pnpm check",
     attempt: 2,
-    max: 3,
+    attempts: 3,
     tail: "Type error in src/a.ts",
   });
   CASES.push([

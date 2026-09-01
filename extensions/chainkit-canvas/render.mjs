@@ -38,6 +38,7 @@ export function page() {
   #top { flex: none; padding: 12px 14px 0;
          border-bottom: 1px solid var(--border-color-muted, #d8dee4); }
   #top.delivered { border-bottom: 3px solid var(--ok); background: rgba(46, 160, 67, .08); }
+  #top.completed, #top.verified { border-bottom: 3px solid var(--warn); background: rgba(210, 153, 34, .08); }
   #top.failed, #top.halted { border-bottom: 3px solid var(--bad); background: rgba(248, 81, 73, .08); }
   /* min-height:0 is load-bearing: a flex child defaults to min-content, so without
      it this box refuses to shrink and the page scrolls as a whole again -- the exact
@@ -54,11 +55,13 @@ export function page() {
   .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; background: var(--muted); }
   .dot.live { background: var(--ok); animation: pulse 1.4s ease-in-out infinite; }
   .dot.delivered { background: var(--ok); }
+  .dot.completed, .dot.verified { background: var(--warn); }
   .dot.failed, .dot.halted { background: var(--bad); }
   .runstate { margin-left: 4px; padding: 1px 6px; border-radius: 999px; font-size: 10px;
               font-weight: 700; letter-spacing: .06em; color: var(--muted);
               border: 1px solid currentColor; }
   .runstate.live, .runstate.delivered { color: var(--ok); }
+  .runstate.completed, .runstate.verified { color: var(--warn); }
   .runstate.failed, .runstate.halted { color: var(--bad); }
   .runsummary { min-width: 0; color: var(--muted); font-size: 12px; font-weight: 400;
                 overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -381,7 +384,7 @@ function render(s) {
   document.getElementById("top").className = state;
   const stateEl = document.getElementById("runstate");
   stateEl.className = "runstate " + state;
-  stateEl.textContent = state === "live" ? "LIVE" : state === "delivered" ? "DELIVERED" : state === "halted" ? "HALTED" : state === "failed" ? "FAILED" : "IDLE";
+  stateEl.textContent = state === "live" ? "LIVE" : state === "delivered" ? "DELIVERED" : state === "verified" ? "VERIFIED · NOT DELIVERED" : state === "completed" ? "COMPLETED · UNVERIFIED" : state === "halted" ? "HALTED" : state === "failed" ? "FAILED" : "IDLE";
   const summaryEl = document.getElementById("runsummary");
   summaryEl.textContent = run?.headline || "";
   summaryEl.title = run?.headline || "";
@@ -486,7 +489,12 @@ function render(s) {
     if (st.declared && st.declared.tools === false)
       bits.push('<span class="chan">reasons only</span>');
     if (st.declared?.inLoop) bits.push('<span class="chan">in loop</span>');
-    if (st.declared?.inGateRepair) bits.push('<span class="chan">final gate repair</span>');
+    if (st.declared?.inCompletionRepair)
+      bits.push('<span class="chan">chain completion repair</span>');
+    if (st.declared?.inForeachCompletionRepair)
+      bits.push('<span class="chan">item completion repair</span>');
+    if (st.declared?.inGateRepair)
+      bits.push('<span class="chan">final gate repair (legacy)</span>');
     // Same weight as the rest: a resumed session is a handoff fact about the stage,
     // exactly like the tools it was given and the contract it must satisfy. Guarded
     // rather than pushed unconditionally -- an empty string is still an entry, and
@@ -507,7 +515,7 @@ function render(s) {
       const state = latest ? (latest.ok ? "✓" : "✗") : "⊨";
       const cls = latest && !latest.ok ? "chan warn" : "chan";
       bits.push(
-        \`<span class="\${cls}" title="\${esc(st.declared.completion.run)}">\${state} completion · max \${st.declared.completion.max}</span>\`,
+        \`<span class="\${cls}" title="\${esc(st.declared.completion.run)}">\${state} completion · \${st.declared.completion.attempts ?? st.declared.completion.max} attempt(s)</span>\`,
       );
     }
     if (st.filesChanged && st.filesChanged.length)
@@ -521,7 +529,7 @@ function render(s) {
   function exitCriterion(st) {
     const completion = st.declared?.completion;
     if (!completion) return "";
-    const attempts = Number(completion.max) || 1;
+    const attempts = Number(completion.attempts ?? completion.max) || 1;
     return \`<div class="criterion">
       <b>Exit criterion</b>
       <code>\${esc(completion.run)}</code>

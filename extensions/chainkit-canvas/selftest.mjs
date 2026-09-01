@@ -875,6 +875,16 @@ rmSync(root, { recursive: true, force: true });
   eq("a live run is classified separately", runState(null, true), "live");
   eq("a successful terminal run says delivered", runState({ delivered: true }, false), "delivered");
   eq(
+    "an unverified successful run says completed",
+    runState({ delivered: false, completed: true, completionStatus: "absent" }, false),
+    "completed",
+  );
+  eq(
+    "a verified run that failed the delivery oracle stays visibly verified",
+    runState({ delivered: false, completed: true, verified: true }, false),
+    "verified",
+  );
+  eq(
     "an unsuccessful terminal run says failed",
     runState({ delivered: false, gate: { ok: false } }, false),
     "failed",
@@ -887,7 +897,7 @@ rmSync(root, { recursive: true, force: true });
   eq("the sticky header carries the terminal state", html.includes('id="runstate"'), true);
   eq("terminal failure changes the whole header", html.includes("#top.failed"), true);
   eq(
-    "a failed full build says how far it got and why",
+    "a preserved legacy gate record still says how far it got and why",
     runHeadline(
       {
         delivered: false,
@@ -908,6 +918,11 @@ rmSync(root, { recursive: true, force: true });
       "chunk",
     ),
     "Completed 4/4 chunks; 4/4 gates passed, but the final gate failed: unused exported type FinishedScheduleEntry.",
+  );
+  eq(
+    "a new completion record renders completed and unverified",
+    runHeadline({ completed: true, delivered: false, completionStatus: "absent" }, "chunk"),
+    "Completed without declared chain completion; unverified.",
   );
   eq(
     "a halt says where and why",

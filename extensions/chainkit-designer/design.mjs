@@ -165,16 +165,20 @@ export async function readDesign(root, file) {
 
   const produced = new Set(seeds.map((s) => s.name));
   const loopIds = new Set(chain.loop?.stages || []);
-  const gateRepairIds = new Set(
-    typeof chain.gate === "object" ? chain.gate.repair?.stages || [] : [],
-  );
+  const completionRepairIds = new Set(chain.completion?.repair?.stages || []);
+  const foreachCompletionRepairIds = new Set(chain.foreach?.completion?.repair?.stages || []);
 
   const view = stages.map((s) => {
-    const promptFile = path.resolve(promptRoot, s.prompt);
+    const promptFile = s.prompt ? path.resolve(promptRoot, s.prompt) : null;
     let uses = [];
-    const promptMissing = !existsSync(promptFile);
+    const promptMissing = !!promptFile && !existsSync(promptFile);
     let promptChars = 0;
-    if (!promptMissing) {
+    if (s.run) {
+      promptChars = s.run.length;
+      uses = [
+        ...new Set([...s.run.matchAll(/\{\{\s*([\w.]+)\s*\}\}/g)].map((m) => m[1].split(".")[0])),
+      ];
+    } else if (!promptMissing) {
       const text = readFileSync(promptFile, "utf8");
       promptChars = text.length;
       uses = [
@@ -192,7 +196,8 @@ export async function readDesign(root, file) {
       // so the break is visible AT the stage that breaks.
       unresolved: uses.filter((u) => !produced.has(u)),
       inLoop: loopIds.has(s.id),
-      inGateRepair: gateRepairIds.has(s.id),
+      inCompletionRepair: completionRepairIds.has(s.id),
+      inForeachCompletionRepair: foreachCompletionRepairIds.has(s.id),
     };
     if (s.produces) produced.add(s.produces);
     return row;
@@ -211,8 +216,9 @@ export async function readDesign(root, file) {
     loop: chain.loop
       ? { stages: chain.loop.stages || [], until: chain.loop.until, max: chain.loop.max }
       : null,
-    gate: typeof chain.gate === "string" ? { run: chain.gate, repair: null } : chain.gate || null,
-    preflight: chain.preflight || null,
+    foreach: chain.foreach || null,
+    completion: chain.completion || null,
+    requires: chain.requires || null,
     defaults: chain.defaults || {},
     errors,
   };

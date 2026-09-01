@@ -4,7 +4,7 @@
 code → review → fix
 ```
 
-Same job as [rung 01](../01-single-stage/), same spec, same builder, same grader, same gate. One construct added: two more stages, and an **artifact** carrying a value between them.
+Same job as [rung 01](../01-single-stage/), same spec, same builder, same grader, same completion command. One construct added: two more stages, and an **artifact** carrying a value between them.
 
 ## What this rung is for
 

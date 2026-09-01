@@ -54,16 +54,16 @@ const CHAIN_KEYS = new Set([
   "stages",
   "loop",
   "foreach",
-  "gate",
-  "preflight",
+  "completion",
+  "requires",
   "seeds",
   "note",
 ]);
 const LOOP_KEYS = new Set(["stages", "until", "max", "note"]);
 // `onExhausted` exists ONLY on the chain-level loop, which is why this is a separate
 // set rather than a member of LOOP_KEYS. A foreach's inner loop is always followed by
-// that element's own gate -- the objective signal that overrides the reviewer's
-// opinion -- so stopping before the gate would discard the very check that decides
+// that element's own completion -- the objective signal that overrides the reviewer's
+// opinion -- so stopping before completion would discard the very check that decides
 // the element. The chain loop has no such guarantee: what follows it may be a fan-out
 // that spends many times the loop's own cost on the artifact the loop just failed to
 // ratify. So the question "is running on regardless acceptable?" is only meaningful
@@ -74,11 +74,20 @@ const ON_EXHAUSTED = new Set(["halt", "continue"]);
 // nothing about what it is iterating. `over` names an artifact that happens to be
 // an array; `as` binds each element under a name the prompts render. That the
 // elements are "chunks of work" is a fact about the prompt, never about the engine.
-const FOREACH_KEYS = new Set(["over", "as", "stages", "loop", "gate", "expects", "max", "note"]);
-const COMPLETION_KEYS = new Set(["run", "max", "note"]);
-const PREFLIGHT_KEYS = new Set(["run", "note"]);
-const GATE_KEYS = new Set(["run", "repair", "note"]);
-const GATE_REPAIR_KEYS = new Set(["stages", "max", "note"]);
+const FOREACH_KEYS = new Set([
+  "over",
+  "as",
+  "stages",
+  "loop",
+  "completion",
+  "expects",
+  "max",
+  "note",
+]);
+const COMPLETION_KEYS = new Set(["run", "attempts", "repair", "note"]);
+const AGENT_COMPLETION_KEYS = new Set(["run", "attempts", "note"]);
+const REQUIRES_KEYS = new Set(["run", "note"]);
+const COMPLETION_REPAIR_KEYS = new Set(["stages", "note"]);
 const PARSE_MODES = new Set(["text", "json"]);
 
 function unknownKeys(obj, allowed, where) {
@@ -130,12 +139,14 @@ function validateChain(chain, { promptRoot, readPrompt = defaultReadPrompt } = {
       ) {
         errors.push(`stage "${s.id}": completion must be a mapping`);
       } else {
-        errors.push(...unknownKeys(s.completion, COMPLETION_KEYS, `stage "${s.id}".completion`));
+        errors.push(
+          ...unknownKeys(s.completion, AGENT_COMPLETION_KEYS, `stage "${s.id}".completion`),
+        );
         if (typeof s.completion.run !== "string" || !s.completion.run.trim())
           errors.push(`stage "${s.id}".completion: run must be a non-empty shell command`);
-        if (!positiveInteger(s.completion.max))
+        if (!positiveInteger(s.completion.attempts))
           errors.push(
-            `stage "${s.id}".completion: max must be a positive safe integer (bound the retries)`,
+            `stage "${s.id}".completion: attempts must be a positive safe integer (total checks including the initial attempt)`,
           );
       }
     }
@@ -204,32 +215,32 @@ function validateChain(chain, { promptRoot, readPrompt = defaultReadPrompt } = {
     }
   }
 
-  if (chain.preflight !== undefined) {
+  if (chain.requires !== undefined) {
     if (
-      typeof chain.preflight !== "object" ||
-      chain.preflight === null ||
-      Array.isArray(chain.preflight)
+      typeof chain.requires !== "object" ||
+      chain.requires === null ||
+      Array.isArray(chain.requires)
     ) {
-      errors.push("preflight: must be a mapping");
+      errors.push("requires: must be a mapping");
     } else {
-      errors.push(...unknownKeys(chain.preflight, PREFLIGHT_KEYS, "preflight"));
-      if (typeof chain.preflight.run !== "string" || !chain.preflight.run.trim())
-        errors.push("preflight: run must be a non-empty shell command");
+      errors.push(...unknownKeys(chain.requires, REQUIRES_KEYS, "requires"));
+      if (typeof chain.requires.run !== "string" || !chain.requires.run.trim())
+        errors.push("requires: run must be a non-empty shell command");
       else {
-        for (const ref of placeholders(chain.preflight.run)) {
+        for (const ref of placeholders(chain.requires.run)) {
           const root = rootOf(ref);
           if (!(root in (chain.seeds || {})))
-            errors.push(`preflight: run references {{${ref}}}, which is not a seed`);
+            errors.push(`requires: run references {{${ref}}}, which is not a seed`);
           else {
             const value = chain.seeds[root];
             if (ref !== root)
-              errors.push(`preflight: run references field {{${ref}}} on scalar seed "${root}"`);
+              errors.push(`requires: run references field {{${ref}}} on scalar seed "${root}"`);
             else if (
               (typeof value === "string" && value.startsWith("@")) ||
               (value !== null && typeof value === "object")
             )
               errors.push(
-                `preflight: run interpolates {{${ref}}}, which is not a scalar literal seed`,
+                `requires: run interpolates {{${ref}}}, which is not a scalar literal seed`,
               );
           }
         }
@@ -237,39 +248,48 @@ function validateChain(chain, { promptRoot, readPrompt = defaultReadPrompt } = {
     }
   }
 
-  if (chain.gate !== undefined && typeof chain.gate !== "string") {
-    if (typeof chain.gate !== "object" || chain.gate === null || Array.isArray(chain.gate)) {
-      errors.push("gate: must be a shell-command string or a mapping");
+  if (chain.completion !== undefined) {
+    if (
+      typeof chain.completion !== "object" ||
+      chain.completion === null ||
+      Array.isArray(chain.completion)
+    ) {
+      errors.push("completion: must be a mapping");
     } else {
-      errors.push(...unknownKeys(chain.gate, GATE_KEYS, "gate"));
-      if (typeof chain.gate.run !== "string" || !chain.gate.run.trim())
-        errors.push("gate: run must be a non-empty shell command");
-      const repair = chain.gate.repair;
+      errors.push(...unknownKeys(chain.completion, COMPLETION_KEYS, "completion"));
+      if (typeof chain.completion.run !== "string" || !chain.completion.run.trim())
+        errors.push("completion: run must be a non-empty shell command");
+      if (!positiveInteger(chain.completion.attempts))
+        errors.push(
+          "completion: attempts must be a positive safe integer (total checks including the initial attempt)",
+        );
+      const repair = chain.completion.repair;
       if (repair !== undefined) {
         if (typeof repair !== "object" || repair === null || Array.isArray(repair)) {
-          errors.push("gate.repair: must be a mapping");
+          errors.push("completion.repair: must be a mapping");
         } else {
-          errors.push(...unknownKeys(repair, GATE_REPAIR_KEYS, "gate.repair"));
-          if (!repair.stages?.length) errors.push("gate.repair: stages must be a non-empty list");
+          errors.push(...unknownKeys(repair, COMPLETION_REPAIR_KEYS, "completion.repair"));
+          if (!repair.stages?.length)
+            errors.push("completion.repair: stages must be a non-empty list");
           else {
             for (const id of repair.stages) {
               if (!seen.has(id))
-                errors.push(`gate.repair: names stage "${id}", which does not exist`);
+                errors.push(`completion.repair: names stage "${id}", which does not exist`);
               const stage = stages.find((candidate) => candidate.id === id);
               if (stage?.produces)
                 errors.push(
-                  `gate.repair: stage "${id}" must not produce an artifact -- it runs only after a failed final gate`,
+                  `completion.repair: stage "${id}" must not produce an artifact -- it runs only after failed chain completion`,
                 );
               if ((chain.loop?.stages || []).includes(id))
-                errors.push(`gate.repair: stage "${id}" is also in the chain loop`);
+                errors.push(`completion.repair: stage "${id}" is also in the chain loop`);
               if ((chain.foreach?.stages || []).includes(id))
-                errors.push(`gate.repair: stage "${id}" is also in the foreach`);
+                errors.push(`completion.repair: stage "${id}" is also in the foreach`);
             }
           }
-          if (!positiveInteger(repair.max))
-            errors.push("gate.repair: max must be a positive safe integer (bound the retries)");
         }
       }
+      if (chain.completion.attempts > 1 && !repair?.stages?.length)
+        errors.push("completion: attempts > 1 requires repair.stages");
     }
   }
 
@@ -285,12 +305,12 @@ function validateChain(chain, { promptRoot, readPrompt = defaultReadPrompt } = {
   const fe = chain.foreach || null;
   const feIds = new Set(fe?.stages || []);
   const feLoopIds = new Set(fe?.loop?.stages || []);
-  const gateRepairIds = new Set(
-    typeof chain.gate === "object" ? chain.gate.repair?.stages || [] : [],
-  );
+  const completionRepairIds = new Set(chain.completion?.repair?.stages || []);
+  const foreachRepairIds = new Set(fe?.completion?.repair?.stages || []);
   const available = new Set(Object.keys(chain.seeds || {}));
   const loopProduces = stages.filter((s) => loopIds.has(s.id) && s.produces).map((s) => s.produces);
   const feProduces = stages.filter((s) => feIds.has(s.id) && s.produces).map((s) => s.produces);
+  const allProduces = stages.filter((s) => s.produces).map((s) => s.produces);
   const firstPassProducesBefore = new Map();
   const firstPassProduces = [];
   for (const id of fe?.stages || []) {
@@ -303,16 +323,18 @@ function validateChain(chain, { promptRoot, readPrompt = defaultReadPrompt } = {
   const visibleFor = (stage, { after = false } = {}) => {
     const visible = new Set(available);
     if (loopIds.has(stage.id)) for (const p of loopProduces) visible.add(p);
-    if (feIds.has(stage.id)) {
+    if (completionRepairIds.has(stage.id)) for (const p of allProduces) visible.add(p);
+    if (feIds.has(stage.id) || foreachRepairIds.has(stage.id)) {
       // Declaration order is not execution order inside a foreach. Loop members do
       // not run during the first pass, so a first-pass stage cannot read an artifact
       // that only a loop member produces, even when that producer is declared above
       // it. Loop members may read the whole foreach set because later rounds consume
       // artifacts written by earlier rounds.
       for (const p of feProduces) visible.delete(p);
-      const reachable = feLoopIds.has(stage.id)
-        ? feProduces
-        : firstPassProducesBefore.get(stage.id) || [];
+      const reachable =
+        feLoopIds.has(stage.id) || foreachRepairIds.has(stage.id)
+          ? feProduces
+          : firstPassProducesBefore.get(stage.id) || [];
       for (const p of reachable) visible.add(p);
       if (fe?.as) visible.add(fe.as);
     }
@@ -469,16 +491,67 @@ function validateChain(chain, { promptRoot, readPrompt = defaultReadPrompt } = {
         );
     }
 
-    // The per-chunk gate is a COMMAND TEMPLATE. It is optional in the kernel, but a
-    // foreach with no gate has no objective signal per element -- the inner loop is
-    // then graded only by a model's opinion of its own work.
-    if (fe.gate !== undefined && typeof fe.gate !== "string")
-      errors.push("foreach: gate must be a string (a shell command, may use {{...}})");
-    if (typeof fe.gate === "string") {
-      for (const ref of placeholders(fe.gate)) {
+    if (fe.completion !== undefined) {
+      if (
+        typeof fe.completion !== "object" ||
+        fe.completion === null ||
+        Array.isArray(fe.completion)
+      ) {
+        errors.push("foreach.completion: must be a mapping");
+      } else {
+        errors.push(...unknownKeys(fe.completion, COMPLETION_KEYS, "foreach.completion"));
+        if (typeof fe.completion.run !== "string" || !fe.completion.run.trim())
+          errors.push("foreach.completion: run must be a non-empty shell command");
+        if (!positiveInteger(fe.completion.attempts))
+          errors.push(
+            "foreach.completion: attempts must be a positive safe integer (total checks including the initial attempt)",
+          );
+        const repair = fe.completion.repair;
+        if (repair !== undefined) {
+          if (typeof repair !== "object" || repair === null || Array.isArray(repair)) {
+            errors.push("foreach.completion.repair: must be a mapping");
+          } else {
+            errors.push(
+              ...unknownKeys(repair, COMPLETION_REPAIR_KEYS, "foreach.completion.repair"),
+            );
+            if (!repair.stages?.length)
+              errors.push("foreach.completion.repair: stages must be a non-empty list");
+            for (const id of repair.stages || []) {
+              if (!seen.has(id))
+                errors.push(`foreach.completion.repair: names stage "${id}", which does not exist`);
+              const stage = stages.find((candidate) => candidate.id === id);
+              if (stage?.produces)
+                errors.push(
+                  `foreach.completion.repair: stage "${id}" must not produce an artifact -- it runs only after failed item completion`,
+                );
+              if (feIds.has(id))
+                errors.push(
+                  `foreach.completion.repair: stage "${id}" is also an ordinary foreach stage`,
+                );
+              if (loopIds.has(id))
+                errors.push(
+                  `foreach.completion.repair: stage "${id}" is also in the chain-level loop`,
+                );
+              if (completionRepairIds.has(id))
+                errors.push(
+                  `foreach.completion.repair: stage "${id}" is also a chain completion repair stage`,
+                );
+            }
+          }
+        }
+        if (fe.completion.attempts > 1 && !repair?.stages?.length)
+          errors.push("foreach.completion: attempts > 1 requires repair.stages");
+      }
+    }
+    if (typeof fe.completion?.run === "string") {
+      for (const ref of placeholders(fe.completion.run)) {
         const r = rootOf(ref);
         if (r !== fe.as && !available.has(r))
-          errors.push(`foreach: gate references {{${ref}}}, which nothing produces`);
+          errors.push(`foreach.completion: run references {{${ref}}}, which nothing produces`);
+        else if (nonScalar.has(ref))
+          errors.push(
+            `foreach.completion: run interpolates {{${ref}}}, which is structured (not a scalar)`,
+          );
       }
     }
 
@@ -496,6 +569,15 @@ function validateChain(chain, { promptRoot, readPrompt = defaultReadPrompt } = {
                 `which is not one of ${[...EXPECT_TYPES].join(", ")}`,
             );
       }
+    }
+  }
+
+  if (typeof chain.completion?.run === "string") {
+    for (const ref of placeholders(chain.completion.run)) {
+      if (!available.has(rootOf(ref)))
+        errors.push(`completion: run references {{${ref}}}, which nothing produces`);
+      else if (nonScalar.has(ref))
+        errors.push(`completion: run interpolates {{${ref}}}, which is structured (not a scalar)`);
     }
   }
 
@@ -772,72 +854,81 @@ export function selfTest() {
 
   CASES.push(["a well-formed chain validates clean", V(base).length === 0]);
   CASES.push([
-    "a legacy string gate remains valid",
-    V({ ...base, gate: "pnpm check" }).length === 0,
+    "legacy top-level gate authoring is rejected",
+    V({ ...base, gate: "pnpm check" }).some((e) => e.includes('unknown key "gate"')),
   ]);
   CASES.push([
-    "a repairable final gate validates",
+    "a repairable chain completion validates",
     V({
       ...base,
       stages: [...base.stages, { id: "integration-fix", prompt: "a.md" }],
-      gate: { run: "pnpm check", repair: { stages: ["integration-fix"], max: 2 } },
+      completion: {
+        run: "pnpm check",
+        attempts: 2,
+        repair: { stages: ["integration-fix"] },
+      },
     }).length === 0,
   ]);
   CASES.push([
-    "a repairable gate requires a bounded retry count",
+    "composite retries require repair stages",
     V({
       ...base,
-      gate: { run: "pnpm check", repair: { stages: ["code"] } },
-    }).some((e) => e.includes("bound the retries")),
+      completion: { run: "pnpm check", attempts: 2 },
+    }).some((e) => e.includes("requires repair.stages")),
   ]);
   CASES.push([
-    "a repairable gate must name real stages",
+    "a repairable completion must name real stages",
     V({
       ...base,
-      gate: { run: "pnpm check", repair: { stages: ["missing"], max: 2 } },
+      completion: { run: "pnpm check", attempts: 2, repair: { stages: ["missing"] } },
     }).some((e) => e.includes('stage "missing"')),
   ]);
   CASES.push([
-    "a final-gate repair stage cannot produce an artifact",
+    "a chain completion repair stage cannot produce an artifact",
     V({
       ...base,
-      gate: { run: "pnpm check", repair: { stages: ["code"], max: 2 } },
+      completion: { run: "pnpm check", attempts: 2, repair: { stages: ["code"] } },
     }).some((e) => e.includes("must not produce an artifact")),
   ]);
   CASES.push([
-    "a repairable gate rejects an unsafe retry bound",
+    "a completion rejects an unsafe attempt bound",
     V({
       ...base,
       stages: [...base.stages, { id: "integration-fix", prompt: "a.md" }],
-      gate: {
+      completion: {
         run: "pnpm check",
-        repair: { stages: ["integration-fix"], max: Number.POSITIVE_INFINITY },
+        attempts: Number.POSITIVE_INFINITY,
+        repair: { stages: ["integration-fix"] },
       },
     }).some((e) => e.includes("positive safe integer")),
   ]);
   CASES.push([
-    "an explicit preflight command validates",
-    V({ ...base, preflight: { run: 'test -z "$(git status --porcelain)"' } }).length === 0,
+    "an explicit requires command validates",
+    V({ ...base, requires: { run: "test -d .git" } }).length === 0,
   ]);
   CASES.push([
-    "preflight may interpolate a scalar literal seed",
+    "requires may interpolate a scalar literal seed",
     V({
       ...base,
       seeds: { spec: "", branch: "main" },
-      preflight: { run: "test {{branch}} = main" },
+      requires: { run: "test {{branch}} = main" },
     }).length === 0,
   ]);
   CASES.push([
-    "preflight cannot interpolate a file-backed seed",
-    V({ ...base, seeds: { spec: "@spec.md" }, preflight: { run: "test -n {{spec}}" } }).some((e) =>
+    "requires cannot interpolate a file-backed seed",
+    V({ ...base, seeds: { spec: "@spec.md" }, requires: { run: "test -n {{spec}}" } }).some((e) =>
       e.includes("not a scalar literal seed"),
     ),
   ]);
   CASES.push([
-    "preflight cannot reference a field on a scalar seed",
-    V({ ...base, seeds: { spec: "" }, preflight: { run: "test -n {{spec.path}}" } }).some((e) =>
+    "requires cannot reference a field on a scalar seed",
+    V({ ...base, seeds: { spec: "" }, requires: { run: "test -n {{spec.path}}" } }).some((e) =>
       e.includes("field {{spec.path}}"),
     ),
+  ]);
+  CASES.push([
+    "legacy preflight authoring is rejected",
+    V({ ...base, preflight: { run: "true" } }).some((e) => e.includes('unknown key "preflight"')),
   ]);
 
   // "Nothing is fixed" only holds if an omission is caught rather than absorbed.
@@ -931,13 +1022,13 @@ export function selfTest() {
   });
   CASES.push([
     "a bounded completion command is valid",
-    V(withCompletion({ run: "pnpm check", max: 3 })).length === 0,
+    V(withCompletion({ run: "pnpm check", attempts: 3 })).length === 0,
   ]);
   CASES.push([
     "completion is rejected on a command stage because no agent can resume",
     V({
       ...base,
-      stages: [{ id: "fmt", run: "pnpm format", completion: { run: "pnpm check", max: 2 } }],
+      stages: [{ id: "fmt", run: "pnpm format", completion: { run: "pnpm check", attempts: 2 } }],
     }).some((e) => e.includes("no agent session to resume")),
   ]);
   CASES.push([
@@ -946,39 +1037,40 @@ export function selfTest() {
   ]);
   CASES.push([
     "completion requires a non-empty command",
-    V(withCompletion({ run: "", max: 2 })).some((e) => e.includes("non-empty shell command")),
+    V(withCompletion({ run: "", attempts: 2 })).some((e) => e.includes("non-empty shell command")),
   ]);
   CASES.push([
-    "completion retries must be bounded",
-    V(withCompletion({ run: "pnpm check" })).some((e) => e.includes("bound the retries")),
+    "completion attempts must be bounded",
+    V(withCompletion({ run: "pnpm check" })).some((e) => e.includes("attempts must be a positive")),
   ]);
   for (const badMax of [1.5, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1]) {
     CASES.push([
       `completion rejects non-safe bound ${badMax}`,
-      V(withCompletion({ run: "pnpm check", max: badMax })).some((e) =>
+      V(withCompletion({ run: "pnpm check", attempts: badMax })).some((e) =>
         e.includes("positive safe integer"),
       ),
     ]);
   }
   CASES.push([
     "completion rejects unknown keys",
-    V(withCompletion({ run: "pnpm check", max: 2, retries: 2 })).some((e) =>
+    V(withCompletion({ run: "pnpm check", attempts: 2, retries: 2 })).some((e) =>
       e.includes('unknown key "retries"'),
     ),
   ]);
   CASES.push([
     "completion may reference the stage artifact it checks",
-    V(withCompletion({ run: "node check.mjs plan", max: 2 })).length === 0,
+    V(withCompletion({ run: "node check.mjs plan", attempts: 2 })).length === 0,
   ]);
   CASES.push([
     "completion refuses an unavailable artifact",
-    V(withCompletion({ run: "node check.mjs {{missing}}", max: 2 })).some((e) =>
+    V(withCompletion({ run: "node check.mjs {{missing}}", attempts: 2 })).some((e) =>
       e.includes("unavailable after the stage"),
     ),
   ]);
   CASES.push([
     "resolved stages retain completion configuration",
-    resolveStages(withCompletion({ run: "pnpm check", max: 2 })).at(0).completion?.max === 2,
+    resolveStages(withCompletion({ run: "pnpm check", attempts: 2 })).at(0).completion?.attempts ===
+      2,
   ]);
   // A command is rendered like a prompt, so it gets the same static reachability
   // check -- knowable before the run, so it must not cost one to discover.
@@ -1306,7 +1398,7 @@ export function selfTest() {
       as: "chunk",
       stages: ["code", "review", "fix"],
       loop: { stages: ["review", "fix"], until: "verdict.pass", max: 3 },
-      gate: "{{chunk.acceptance}}",
+      completion: { run: "{{chunk.acceptance}}", attempts: 1 },
       expects: { id: "string", files: "array", acceptance: "string" },
       max: 20,
     },
@@ -1405,12 +1497,14 @@ export function selfTest() {
     ),
   ]);
   CASES.push([
-    "a gate referencing something nothing provides is an error",
-    FE({ gate: "{{ghost.cmd}}" }).some((e) => e.includes("gate references")),
+    "foreach completion referencing something nothing provides is an error",
+    FE({ completion: { run: "{{ghost.cmd}}", attempts: 1 } }).some((e) =>
+      e.includes("completion: run references"),
+    ),
   ]);
   CASES.push([
-    "a gate may reference the bound element",
-    FE({ gate: "run {{chunk.acceptance}}" }).length === 0,
+    "foreach completion may reference the bound element",
+    FE({ completion: { run: "run {{chunk.acceptance}}", attempts: 1 } }).length === 0,
   ]);
   CASES.push([
     "foreach expects must name real types",
@@ -1424,8 +1518,8 @@ export function selfTest() {
     }).some((e) => e.includes("also in the chain-level loop")),
   ]);
   CASES.push([
-    "a foreach with no gate still validates (the kernel does not require one)",
-    V({ ...feChain, foreach: { ...feChain.foreach, gate: undefined } }).length === 0,
+    "a foreach with no completion still validates",
+    V({ ...feChain, foreach: { ...feChain.foreach, completion: undefined } }).length === 0,
   ]);
   CASES.push([
     "onExhausted on a FOREACH loop is rejected — it means nothing where a gate follows",

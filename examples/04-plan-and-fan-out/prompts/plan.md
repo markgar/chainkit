@@ -8,7 +8,7 @@ measurable:
 
 - Each chunk OWNS a disjoint set of files. No two chunks may name the same file.
 - Each chunk has exactly ONE acceptance command, and that command must pass with
-  only that chunk's files present. A chunk whose gate depends on a later chunk
+  only that chunk's files present. A chunk whose completion depends on a later chunk
   cannot be graded when it is built.
 - Chunks are ordered. Later chunks may assume earlier ones exist on disk.
 - Every behaviour in the spec belongs to exactly one chunk.

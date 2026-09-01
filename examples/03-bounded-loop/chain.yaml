@@ -1,7 +1,7 @@
 # 03-bounded-loop — review and repair REPEATEDLY, until a named field says stop.
 #
 # Exactly one construct added to rung 02: `loop`. Same job, same spec, same
-# builder, same reviewer, same grader, same gate. The only difference is that
+# builder, same reviewer, same grader, same completion. The only difference is that
 # review and fix now repeat until the reviewer passes the work, instead of
 # running once each regardless.
 #
@@ -57,10 +57,10 @@ loop:
   stages: [review, fix]
   until: verdict.pass # the field named in `expects` above
   onExhausted:
-    continue # RUN THE GATE ANYWAY. The default is `halt`, because a loop that
+    continue # RUN COMPLETION ANYWAY. The default is `halt`, because a loop that
     # never reached its condition has declared its output unfit, and
     # most chains spend real money downstream of that. Here the
-    # reviewer is ADVISORY: the gate below is objective and decides
+    # reviewer is ADVISORY: completion below is objective and decides
     # the run, so stopping at the bound would throw away the only
     # check that actually grades the work. An unsatisfied loop is
     # still recorded as unsatisfied, and still blocks `delivered`.
@@ -70,4 +70,6 @@ loop:
     # bound is recorded in the run record as an unsatisfied loop, so a
     # run that thrashed is distinguishable from one that converged.
 
-gate: "git diff --quiet HEAD -- acceptance && node --test acceptance/*.test.js"
+completion:
+  run: "git diff --quiet HEAD -- acceptance && node --test acceptance/*.test.js"
+  attempts: 1

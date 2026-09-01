@@ -5,7 +5,7 @@
 # above this one, the stages are ceremony.
 #
 # It also exercises the whole kernel with nowhere to hide: config -> prompt ->
-# CLI call -> telemetry -> run record -> gate. If this rung does not work,
+# CLI call -> telemetry -> run record -> completion. If this rung does not work,
 # nothing above it will either.
 
 name: 01-single-stage
@@ -32,11 +32,7 @@ stages:
     # would be decoration.
     model: mai-code-1.1-flash
     tools: true # it has to be able to read and write the repo
-
-# The chain's own definition of done, run once over the result.
-#
-# TWO clauses, and the first is not optional. `node --test` alone would be a
-# grade awarded by tests the run itself could have rewritten. So the grader is
-# checked unchanged BEFORE it is trusted. A gate that can be edited by the thing
-# it grades is not a gate.
-gate: "git diff --quiet HEAD -- acceptance && node --test acceptance/*.test.js"
+    # A command used only to judge this agent belongs to the agent's completion.
+    completion:
+      run: "git diff --quiet HEAD -- acceptance && node --test acceptance/*.test.js"
+      attempts: 2

@@ -110,7 +110,7 @@ export function modelWarnings(chain, roster = KNOWN_MODELS) {
     out.push(
       `model "${id}" is not in the known roster` +
         (near ? ` (did you mean "${near}"?)` : "") +
-        `. The roster is a spell-check, not a gate: if the id is real and just newer ` +
+        `. The roster is a spell-check, not a completion contract: if the id is real and just newer ` +
         `than kernel/models.mjs, refresh it with \`node models.mjs --roster\`. ` +
         `An id the CLI does not accept fails at dispatch, after earlier stages are paid for.`,
     );

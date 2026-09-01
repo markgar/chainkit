@@ -144,7 +144,9 @@ const session = await joinSession({
                 inLoop: s.inLoop,
               })),
               loop: d.loop,
-              gate: d.gate,
+              foreach: d.foreach,
+              completion: d.completion,
+              requires: d.requires,
             };
           },
         },

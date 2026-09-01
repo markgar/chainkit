@@ -161,6 +161,8 @@ export function runState(summary, live) {
   if (!summary) return "idle";
   if (summary.delivered === true) return "delivered";
   if (summary.halted) return "halted";
+  if (summary.verified === true) return "verified";
+  if (summary.completed === true) return "completed";
   return "failed";
 }
 
@@ -196,25 +198,41 @@ export function runHeadline(summary, unit = "element") {
   if (!summary) return "";
   const iterations = Array.isArray(summary.foreach?.iterations) ? summary.foreach.iterations : [];
   const count = Number(summary.foreach?.count ?? iterations.length);
-  const passed = iterations.filter((iteration) => iteration.gate?.ok === true).length;
+  const legacy = !("completionStatus" in summary);
+  const passed = iterations.filter(
+    (iteration) => (iteration.completion || iteration.gate)?.ok === true,
+  ).length;
   const noun = count === 1 ? unit : `${unit}s`;
   const progress = count
-    ? `Completed ${count}/${count} ${noun}; ${passed}/${count} gates passed`
+    ? `Completed ${count}/${count} ${noun}; ${passed}/${count} ${legacy ? "gates" : "completion checks"} passed`
     : "";
 
   if (summary.delivered === true) {
     return progress
-      ? `${progress}, and the final gate passed.`
-      : "Delivered; the final gate passed.";
+      ? `${progress}, and ${legacy ? "the final gate" : "chain completion"} passed.`
+      : `Delivered; ${legacy ? "the final gate" : "chain completion"} passed.`;
   }
   if (summary.halted) {
     const where = summary.halted.stage ? ` at ${summary.halted.stage}` : "";
     return `Stopped${where}: ${summary.halted.reason || summary.halted.kind || "the run halted"}.`;
   }
-  if (summary.gate?.ok === false) {
-    const reason = gateFailure(summary.gate.tail);
-    return `${progress ? `${progress}, but t` : "T"}he final gate failed${reason ? `: ${reason}` : ""}.`;
+  const completion = summary.completion || summary.gate;
+  if (completion?.ok === false) {
+    const last = completion.checks?.at(-1) || completion;
+    const reason = gateFailure(last.tail);
+    const subject = legacy
+      ? progress
+        ? "the final gate"
+        : "The final gate"
+      : progress
+        ? "chain completion"
+        : "Chain completion";
+    return `${progress ? `${progress}, but ` : ""}${subject} failed${reason ? `: ${reason}` : ""}.`;
   }
+  if (summary.completed === true && summary.completionStatus === "absent")
+    return progress
+      ? `${progress}; completed without declared chain completion, so it is unverified.`
+      : "Completed without declared chain completion; unverified.";
   return progress ? `${progress}, but the run was not delivered.` : "Finished without delivery.";
 }
 
@@ -932,6 +950,8 @@ export function readRun(runDir, root) {
       produces: p.produces,
       parse: p.parse,
       inLoop: p.inLoop,
+      inCompletionRepair: p.inCompletionRepair,
+      inForeachCompletionRepair: p.inForeachCompletionRepair,
       inGateRepair: p.inGateRepair,
       completion: p.completion || null,
     };

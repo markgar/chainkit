@@ -99,11 +99,11 @@ export function page() {
   }
   .loopfoot { margin-top: 8px; }
 
-  .gate {
+  .completion {
     margin-top: 16px; border: 1px solid var(--line); border-radius: 9px;
     background: #0f141b; padding: 9px 12px;
   }
-  .gate .k { color: var(--muted); font-size: 11px; margin-bottom: 3px; }
+  .completion .k { color: var(--muted); font-size: 11px; margin-bottom: 3px; }
 
   .prob { border: 1px solid var(--bad); background: #f8514912; border-radius: 8px; padding: 9px 12px; margin: 12px 0; }
   .prob .h { color: var(--bad); font-weight: 600; font-size: 12px; margin-bottom: 5px; }
@@ -143,9 +143,12 @@ function stageHtml(s, n) {
       ? \`<span class="pill" title="declared key contract — a reworded prompt that drops one of these fails the stage">⊨ \${esc(Object.keys(s.expects).join(", "))}</span>\`
       : "",
     s.completion
-      ? \`<span class="pill resume" title="\${esc(s.completion.run)}">✓ completion · max \${esc(s.completion.max)}</span>\`
+      ? \`<span class="pill resume" title="\${esc(s.completion.run)}">✓ completion · \${esc(s.completion.attempts)} attempt(s)</span>\`
       : "",
-    s.inGateRepair ? '<span class="pill resume">final gate repair</span>' : "",
+    s.inCompletionRepair ? '<span class="pill resume">chain completion repair</span>' : "",
+    s.inForeachCompletionRepair
+      ? '<span class="pill resume">item completion repair</span>'
+      : "",
   ].join("");
 
   const uses = (s.uses || []).length
@@ -166,8 +169,8 @@ function stageHtml(s, n) {
         ? \`{{\${esc(s.produces)}}}\`
         : '<span style="color:var(--muted)">the working tree — no named artifact</span>'
     }</span></div>
-    <div class="io"><span class="lbl">prompt</span>
-      <span class="pfile mono \${s.promptMissing ? "missing" : ""}">\${esc(s.prompt)}\${s.promptMissing ? " — FILE NOT FOUND" : \` · \${s.promptChars} chars\`}</span>
+    <div class="io"><span class="lbl">\${s.run ? "command" : "prompt"}</span>
+      <span class="pfile mono \${s.promptMissing ? "missing" : ""}">\${esc(s.run || s.prompt)}\${s.promptMissing ? " — FILE NOT FOUND" : \` · \${s.promptChars} chars\`}</span>
     </div>
   </div>\`;
 }
@@ -197,7 +200,7 @@ function render(st) {
   document.getElementById("meta").textContent =
     \`\${nStage} stage\${nStage === 1 ? "" : "s"}\` +
     (d.loop ? \` · loop ×\${d.loop.max}\` : "") +
-    (d.gate ? " · gated" : " · NO GATE");
+    (d.completion ? " · completion declared" : " · completed/unverified");
 
   const problems = (d.errors || []).length
     ? \`<div class="prob"><div class="h">\${d.errors.length} problem(s) — this chain will refuse to run</div><ul>\${d.errors.map(e => \`<li>\${esc(e)}</li>\`).join("")}</ul></div>\`
@@ -224,15 +227,18 @@ function render(st) {
     html += stageHtml(s, i + 1);
     i++;
   }
-  if (openedLoop) html += \`</div><div class="loopfoot">└ then the gate</div>\`;
+  if (openedLoop) html += \`</div><div class="loopfoot">└ then completion</div>\`;
 
-  const gate = d.gate
-    ? \`<div class="gate"><div class="k">GATE — the chain's own definition of done\${d.gate.repair ? " · repairs via " + esc(d.gate.repair.stages.join(", ")) + " · max " + esc(d.gate.repair.max) : ""}</div><div class="mono">\${esc(d.gate.run)}</div></div>\`
-    : \`<div class="gate"><div class="k" style="color:var(--warn)">NO GATE — nothing checks the result, so this chain can only ever report that its stages ran</div></div>\`;
+  const completion = d.completion
+    ? \`<div class="completion"><div class="k">CHAIN COMPLETION\${d.completion.repair ? " · repairs via " + esc(d.completion.repair.stages.join(", ")) : ""} · \${esc(d.completion.attempts)} attempt(s)</div><div class="mono">\${esc(d.completion.run)}</div></div>\`
+    : \`<div class="completion"><div class="k" style="color:var(--warn)">NO CHAIN COMPLETION — a successful run is completed but unverified and cannot be delivered</div></div>\`;
+  const itemCompletion = d.foreach?.completion
+    ? \`<div class="completion"><div class="k">FOREACH ITEM COMPLETION\${d.foreach.completion.repair ? " · repairs via " + esc(d.foreach.completion.repair.stages.join(", ")) : ""} · \${esc(d.foreach.completion.attempts)} attempt(s)</div><div class="mono">\${esc(d.foreach.completion.run)}</div></div>\`
+    : "";
 
   root.innerHTML = problems +
     (d.intent ? \`<div class="intent">\${esc(d.intent)}</div>\` : "") +
-    seeds + \`<div class="flow">\${html}</div>\` + gate;
+    seeds + \`<div class="flow">\${html}</div>\` + itemCompletion + completion;
 }
 
 async function tick() {
