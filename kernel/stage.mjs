@@ -262,6 +262,59 @@ function composeStagePrompt(
   return appendAppealNote(`${renderedTemplate}${completionRequirement}${failedCheck}`, stage);
 }
 
+function completionContinuation(stage, failure, command) {
+  const attempts = failure.attempts || failure.max || stage.completion?.attempts;
+  return [
+    "Continue the same task in this existing conversation.",
+    "",
+    failure.context || "Your previous answer did not satisfy the deterministic completion check.",
+    `The exact frozen command is: \`${command}\``,
+    `This is attempt ${failure.attempt}/${attempts}.`,
+    "",
+    "Bounded captured failure output:",
+    "```text",
+    failure.output || failure.tail || failure.error || "(no output captured)",
+    "```",
+    "",
+    "Do not repeat repository discovery already completed in this conversation.",
+    "Repair the failure, run the exact command yourself, and return the complete replacement answer",
+    "in the original requested format rather than a patch, addendum, or partial continuation.",
+  ].join("\n");
+}
+
+function selectStagePrompt({
+  stage,
+  initialTemplate,
+  resumeTemplate = null,
+  ctx,
+  deterministicFailure = null,
+  completionCommand = stage.completion?.run,
+  continued = false,
+  attempt = 0,
+}) {
+  if (stage.resume && continued && deterministicFailure) {
+    return {
+      prompt: completionContinuation(
+        stage,
+        deterministicFailure,
+        deterministicFailure.command || completionCommand,
+      ),
+      promptMode: "completion-continuation",
+    };
+  }
+  if (stage.resume && continued && !deterministicFailure && resumeTemplate != null) {
+    return { prompt: render(resumeTemplate, ctx), promptMode: "round-continuation" };
+  }
+  const prompt = composeStagePrompt(
+    stage,
+    render(initialTemplate, ctx),
+    deterministicFailure,
+    completionCommand,
+  );
+  if (deterministicFailure) return { prompt, promptMode: "fresh-retry" };
+  return { prompt, promptMode: continued ? "repeated-full" : "initial" };
+}
+
 export async function runStage({
   stage,
   ctx,
@@ -282,13 +335,6 @@ export async function runStage({
   const completionCommand = stage.completion
     ? renderCompletionPreview(stage.completion.run, ctx, stage.produces)
     : null;
-  const prompt = composeStagePrompt(
-    stage,
-    render(template, ctx),
-    deterministicFailure,
-    completionCommand,
-  );
-
   const label =
     `${stage.id}${iter ? `.i${iter}` : ""}${round ? `.r${round}` : ""}` +
     `${attempt ? `.a${attempt + 1}` : ""}`;
@@ -310,11 +356,31 @@ export async function runStage({
   // Keyed by iteration too: resuming chunk 1's conversation to build chunk 2 would
   // silently carry the previous chunk's context into a fresh piece of work.
   let sessionId;
+  let continued = false;
   if (stage.resume) {
     const key = `${stage.id}#${iter}`;
+    continued = sessions.has(key);
     if (!sessions.has(key)) sessions.set(key, randomId());
     sessionId = sessions.get(key);
   }
+  const resumeTemplate = stage.resumePrompt
+    ? readFileSync(path.resolve(promptRoot, stage.resumePrompt), "utf8")
+    : null;
+  const { prompt, promptMode } = selectStagePrompt({
+    stage,
+    initialTemplate: template,
+    resumeTemplate,
+    ctx,
+    deterministicFailure,
+    completionCommand,
+    continued,
+    attempt,
+  });
+  const invocation = {
+    promptChars: prompt.length,
+    promptMode,
+    sessionId: sessionId || null,
+  };
 
   const started = Date.now();
   const r = await complete({
@@ -344,6 +410,7 @@ export async function runStage({
       telemetry: r.telemetry,
       rawPath: r.rawPath,
       wallMs: Date.now() - started,
+      ...invocation,
     };
   }
 
@@ -363,6 +430,7 @@ export async function runStage({
       telemetry: r.telemetry,
       rawPath: r.rawPath,
       wallMs: Date.now() - started,
+      ...invocation,
     };
   }
 
@@ -407,6 +475,7 @@ export async function runStage({
         telemetry: r.telemetry,
         rawPath: r.rawPath,
         wallMs: Date.now() - started,
+        ...invocation,
       };
     }
     if (!recoveredFrom) value = p.value;
@@ -422,6 +491,7 @@ export async function runStage({
       telemetry: r.telemetry,
       rawPath: r.rawPath,
       wallMs: Date.now() - started,
+      ...invocation,
     };
   }
 
@@ -434,8 +504,7 @@ export async function runStage({
     recoveredFromCalls: recoveredFrom || undefined,
     telemetry: r.telemetry,
     rawPath: r.rawPath,
-    promptChars: prompt.length,
-    sessionId: sessionId || null,
+    ...invocation,
     wallMs: Date.now() - started,
   };
 }
@@ -653,6 +722,88 @@ export function selfTest() {
     retryPrompt.includes("pnpm check") &&
       retryPrompt.includes("Attempt: 2/3") &&
       retryPrompt.includes("Type error in src/a.ts"),
+  ]);
+  const resumedRetry = selectStagePrompt({
+    stage: {
+      parse: "text",
+      resume: true,
+      completion: { run: "pnpm check", attempts: 3 },
+    },
+    initialTemplate: "ORIGINAL DISCOVERY PROMPT",
+    ctx: {},
+    deterministicFailure: {
+      context: "The exact heading reference is wrong.",
+      command: "pnpm check",
+      attempt: 2,
+      attempts: 3,
+      output: "line one\nline two",
+    },
+    completionCommand: "pnpm check changed-context",
+    continued: true,
+    attempt: 1,
+  });
+  CASES.push([
+    "a resumed deterministic retry sends only compact continuation context",
+    resumedRetry.promptMode === "completion-continuation" &&
+      !resumedRetry.prompt.includes("ORIGINAL DISCOVERY PROMPT") &&
+      resumedRetry.prompt.includes("The exact heading reference is wrong.") &&
+      resumedRetry.prompt.includes("pnpm check") &&
+      !resumedRetry.prompt.includes("changed-context") &&
+      resumedRetry.prompt.includes("attempt 2/3") &&
+      resumedRetry.prompt.includes("line one\nline two") &&
+      resumedRetry.prompt.includes("Do not repeat repository discovery"),
+  ]);
+  const freshRetry = selectStagePrompt({
+    stage: { parse: "text", resume: false },
+    initialTemplate: "ORIGINAL DISCOVERY PROMPT",
+    ctx: {},
+    deterministicFailure: {
+      context: "The check failed.",
+      command: "pnpm check",
+      attempt: 2,
+      attempts: 3,
+      output: "failure",
+    },
+    completionCommand: "pnpm check",
+    attempt: 1,
+  });
+  CASES.push([
+    "a fresh deterministic retry retains the original authored context",
+    freshRetry.promptMode === "fresh-retry" &&
+      freshRetry.prompt.includes("ORIGINAL DISCOVERY PROMPT") &&
+      freshRetry.prompt.includes("The check failed."),
+  ]);
+  const resumedCompositeRepair = selectStagePrompt({
+    stage: { parse: "text", resume: true },
+    initialTemplate: "ORIGINAL REPAIR PROMPT",
+    ctx: {},
+    deterministicFailure: {
+      context: "The assembled repository failed.",
+      command: "pnpm integration",
+      attempt: 2,
+      attempts: 3,
+      output: "integration failure",
+    },
+    continued: true,
+    attempt: 0,
+  });
+  CASES.push([
+    "a resumed composite repair also receives compact failure context",
+    resumedCompositeRepair.promptMode === "completion-continuation" &&
+      !resumedCompositeRepair.prompt.includes("ORIGINAL REPAIR PROMPT") &&
+      resumedCompositeRepair.prompt.includes("pnpm integration"),
+  ]);
+  const roundContinuation = selectStagePrompt({
+    stage: { parse: "text", resume: true },
+    initialTemplate: "ORIGINAL DISCOVERY PROMPT",
+    resumeTemplate: "Continue {{item}} only.",
+    ctx: { has: (name) => name === "item", get: () => "c7" },
+    continued: true,
+  });
+  CASES.push([
+    "a resumed loop invocation uses the authored resume prompt",
+    roundContinuation.promptMode === "round-continuation" &&
+      roundContinuation.prompt === "Continue c7 only.",
   ]);
 
   CASES.push(["bare JSON parses", extractJson('{"a":1}').value.a === 1]);

@@ -22,6 +22,7 @@ import { modelWarnings } from "./models.mjs";
 const STAGE_KEYS = new Set([
   "id",
   "prompt",
+  "resumePrompt",
   "run",
   "produces",
   "parse",
@@ -42,7 +43,7 @@ const STAGE_KEYS = new Set([
 // that belief survive, and the run record would then show a stage with a model that
 // never ran -- unreadable next to a real one. Same reasoning as requiring every
 // model stage to name its model, inverted.
-const MODEL_ONLY_KEYS = ["model", "effort", "tools", "resume"];
+const MODEL_ONLY_KEYS = ["model", "effort", "tools", "resume", "resumePrompt"];
 
 // The types an `expects` declaration may name. Deliberately tiny: this exists to
 // catch a broken key contract, not to be a schema language.
@@ -121,6 +122,15 @@ function validateChain(chain, { promptRoot, readPrompt = defaultReadPrompt } = {
     if (s.prompt && s.run) errors.push(`stage "${s.id}": has both prompt and run -- pick one`);
     if (s.run !== undefined && typeof s.run !== "string")
       errors.push(`stage "${s.id}": run must be a string (a shell command)`);
+    if (s.prompt !== undefined && typeof s.prompt !== "string")
+      errors.push(`stage "${s.id}": prompt must be a string (a prompt file)`);
+    if (
+      s.resumePrompt !== undefined &&
+      (typeof s.resumePrompt !== "string" || !s.resumePrompt.trim())
+    )
+      errors.push(`stage "${s.id}": resumePrompt must be a non-empty prompt file path`);
+    if (s.resumePrompt !== undefined && !(s.resume ?? chain.defaults?.resume ?? false))
+      errors.push(`stage "${s.id}": resumePrompt requires resume: true`);
     if (s.run) {
       for (const k of MODEL_ONLY_KEYS)
         if (s[k] !== undefined)
@@ -404,6 +414,25 @@ function validateChain(chain, { promptRoot, readPrompt = defaultReadPrompt } = {
               `render() emits it as multi-line JSON, which a shell will mangle or execute -- ` +
               `read it from the file at $CHAINKIT_ARTIFACTS instead, or interpolate a scalar field of it`,
           );
+      }
+    }
+    if (typeof s.resumePrompt === "string" && s.resumePrompt.trim()) {
+      let resumeBody = null;
+      try {
+        resumeBody = readPrompt(promptRoot, s.resumePrompt);
+      } catch {
+        errors.push(`stage "${s.id}": resumePrompt file not found: ${s.resumePrompt}`);
+      }
+      if (resumeBody != null) {
+        // A resume prompt runs only after this stage has already completed one
+        // invocation, so its own previously produced artifact is reachable.
+        const visible = visibleFor(s, { after: true });
+        for (const ref of placeholders(resumeBody))
+          if (!visible.has(rootOf(ref)))
+            errors.push(
+              `stage "${s.id}": resumePrompt references {{${ref}}}, which no earlier stage produces ` +
+                `(available: ${[...visible].sort().join(", ") || "none"})`,
+            );
       }
     }
     if (s.completion && typeof s.completion === "object" && typeof s.completion.run === "string") {
@@ -762,6 +791,7 @@ export function resolveStages(chain) {
     return {
       ...common,
       prompt: s.prompt,
+      resumePrompt: s.resumePrompt || null,
       model: s.model || d.model,
       effort: s.effort || d.effort || "high",
       tools: s.tools ?? d.tools ?? false,
@@ -805,6 +835,8 @@ export function selfTest() {
     "fe-fix.md": "fix per {{verdict}}",
     "fe-fix-field.md": "fix per {{verdict.findings}}",
     "asks.md": "read {{spec}} and answer with pass (boolean) and findings (array)",
+    "resume.md": "continue {{spec}}",
+    "resume-bad.md": "continue {{nothing}}",
   };
   const readPrompt = (_root, rel) => {
     if (!(rel in prompts)) throw new Error("missing");
@@ -851,7 +883,48 @@ export function selfTest() {
     ],
   };
   const V = (c) => validateChain(c, { readPrompt });
-
+  CASES.push([
+    "resumePrompt is valid on a resumed model stage",
+    V({
+      ...base,
+      stages: [{ id: "plan", prompt: "a.md", resume: true, resumePrompt: "resume.md" }],
+    }).length === 0,
+  ]);
+  CASES.push([
+    "resumePrompt requires resume true",
+    V({
+      ...base,
+      stages: [{ id: "plan", prompt: "a.md", resumePrompt: "resume.md" }],
+    }).some((e) => e.includes("requires resume: true")),
+  ]);
+  CASES.push([
+    "resumePrompt must be a prompt file path",
+    V({
+      ...base,
+      stages: [{ id: "plan", prompt: "a.md", resume: true, resumePrompt: 7 }],
+    }).some((e) => e.includes("resumePrompt must be")),
+  ]);
+  CASES.push([
+    "a missing resumePrompt file is rejected",
+    V({
+      ...base,
+      stages: [{ id: "plan", prompt: "a.md", resume: true, resumePrompt: "gone.md" }],
+    }).some((e) => e.includes("resumePrompt file not found")),
+  ]);
+  CASES.push([
+    "resumePrompt placeholders obey stage reachability",
+    V({
+      ...base,
+      stages: [{ id: "plan", prompt: "a.md", resume: true, resumePrompt: "resume-bad.md" }],
+    }).some((e) => e.includes("resumePrompt references {{nothing}}")),
+  ]);
+  CASES.push([
+    "resumePrompt survives stage resolution",
+    resolveStages({
+      defaults: { model: "m" },
+      stages: [{ id: "plan", prompt: "a.md", resume: true, resumePrompt: "resume.md" }],
+    })[0].resumePrompt === "resume.md",
+  ]);
   CASES.push(["a well-formed chain validates clean", V(base).length === 0]);
   CASES.push([
     "legacy top-level gate authoring is rejected",

@@ -17,7 +17,14 @@ import path from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { page } from "./render.mjs";
-import { chainRoots, engineRoot, listChains, resolveChainFile, headComment } from "./design.mjs";
+import {
+  chainRoots,
+  engineRoot,
+  listChains,
+  resolveChainFile,
+  headComment,
+  readDesign,
+} from "./design.mjs";
 
 let pass = 0;
 const fails = [];
@@ -49,6 +56,7 @@ eq(
 );
 eq("a stage's declared key contract is shown", html.includes("declared key contract"), true);
 eq("a stage's deterministic completion rule is shown", html.includes("completion ·"), true);
+eq("a stage's resume prompt has its own designer row", html.includes("resume prompt"), true);
 
 // ---------------------------------------------------------------------------
 // THE READ SIDE (design.mjs). This is where the panel's failures actually live,
@@ -76,6 +84,32 @@ mk("vendor/chainkit/examples/02-two/chain.yaml", "name: two\n");
 mk("vendor/chainkit/examples/02-two/prompts/code.md", "a prompt, not a chain");
 // Skipped on purpose: CI config is YAML and lives in a dot-directory.
 mk("vendor/chainkit/.github/workflows/ci.yml", "name: CI\n");
+mk("chain/initial.md", "Initial {{spec}}");
+mk("chain/resume.md", "Continue {{spec}} and {{plan}}");
+mk(
+  "chain/chain.yaml",
+  [
+    "name: continuation",
+    "seeds: { spec: value }",
+    "defaults: { model: m }",
+    "stages:",
+    "  - id: plan",
+    "    prompt: initial.md",
+    "    resume: true",
+    "    resumePrompt: resume.md",
+    "    produces: plan",
+    "",
+  ].join("\n"),
+);
+const continuation = await readDesign(
+  path.resolve(import.meta.dirname, "..", ".."),
+  path.join(tmp, "chain", "chain.yaml"),
+);
+eq("designer reports resumePrompt character count", continuation.stages[0].resumePromptChars, 30);
+eq("designer includes resumePrompt placeholders in dataflow", continuation.stages[0].uses, [
+  "spec",
+  "plan",
+]);
 
 // chainRoots also considers the CWD, deliberately -- an operator standing in a
 // repo expects to see that repo's chains. That makes the CWD a leak INTO this

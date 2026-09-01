@@ -275,6 +275,7 @@ writeFileSync(
         // unrestricted one in the only artifact anybody compares afterwards.
         tools: Array.isArray(s.tools) ? [...s.tools] : !!s.tools,
         resume: s.resume ?? null,
+        resumePrompt: s.resumePrompt ?? null,
         produces: s.produces ?? null,
         parse: s.parse ?? "text",
         expects: s.expects ?? null,
@@ -338,6 +339,28 @@ function journalCall(stage, round, iter, attempt = 0) {
     /* the journal is an observability aid; never fail a run over it */
   }
 }
+function journalCompletion(scope, check, identity = {}) {
+  const event = {
+    type: "completion.checked",
+    timestamp: new Date().toISOString(),
+    scope,
+    identity,
+    check: {
+      command: check.command,
+      status: check.ok ? "passed" : "failed",
+      exitCode: check.code ?? null,
+      output: check.ok ? "" : String(check.output || check.tail || "").slice(-12000),
+      attempt: check.attempt,
+      attempts: check.attempts,
+      ok: check.ok,
+    },
+  };
+  try {
+    appendFileSync(path.join(logRoot, "_events.jsonl"), JSON.stringify(event) + "\n");
+  } catch {
+    /* additive observability must never change run behavior */
+  }
+}
 async function executeOnce(stage, round = 0, iter = 0, attempt = 0, deterministicFailure = null) {
   const t0 = Date.now();
   const treeBefore = snap();
@@ -386,6 +409,7 @@ async function executeOnce(stage, round = 0, iter = 0, attempt = 0, deterministi
     repositoryChanged,
     sessionId: res.sessionId || null,
     promptChars: res.promptChars ?? null,
+    promptMode: res.promptMode ?? null,
     wallMs: res.wallMs ?? Date.now() - t0,
     rawPath: res.rawPath || null,
     recoveredFromCalls: res.recoveredFromCalls ?? null,
@@ -540,6 +564,12 @@ async function execute(stage, round = 0, iter = 0, deterministicFailure = null) 
     onCheck: (check) => {
       stageLog.at(-1).completion = check;
       stageLog.at(-1).completionStatus = check.ok ? "passed" : "failed";
+      journalCompletion("stage", check, {
+        stage: stage.id,
+        iter,
+        round,
+        callAttempt: check.attempt - 1,
+      });
       console.log(
         check.ok
           ? `   ✓ ${stage.id} completion clean`
@@ -756,12 +786,17 @@ if (fe && !halted) {
             changed: stageLog.slice(mark).some((row) => row.repositoryChanged),
           };
         },
-        onCheck: (check) =>
+        onCheck: (check) => {
+          journalCompletion("foreach", check, {
+            iter,
+            checkAttempt: check.attempt,
+          });
           console.log(
             check.ok
               ? "   ✓ item completion clean"
               : `   ✗ item completion FAILED (attempt ${check.attempt}/${check.attempts})`,
-          ),
+          );
+        },
       });
       if (!iterCompletion.ok && !iterCompletion.aborted) halted = iterCompletion.halt;
     }
@@ -826,6 +861,7 @@ if (completionSpec && !halted) {
       };
     },
     onCheck: (check) => {
+      journalCompletion("chain", check, { checkAttempt: check.attempt });
       if (!check.ok) {
         const touched = sh(`git diff --name-only ${baseSha}`, workDir)
           .out.split("\n")

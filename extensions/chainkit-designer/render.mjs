@@ -155,7 +155,7 @@ function stageHtml(s, n) {
     ? s.uses.map(u => \`<span class="art \${(s.unresolved||[]).includes(u) ? "bad" : ""}">{{\${esc(u)}}}</span>\`).join(" ")
     : '<span style="color:var(--muted)">nothing</span>';
 
-  return \`<div class="stage \${s.inLoop ? "loop" : ""} \${(s.unresolved||[]).length || s.promptMissing ? "err" : ""}">
+  return \`<div class="stage \${s.inLoop ? "loop" : ""} \${(s.unresolved||[]).length || s.promptMissing || s.resumePromptMissing ? "err" : ""}">
     <div class="srow">
       <span class="ord">\${n}</span>
       <span class="sid">\${esc(s.id)}</span>
@@ -172,6 +172,9 @@ function stageHtml(s, n) {
     <div class="io"><span class="lbl">\${s.run ? "command" : "prompt"}</span>
       <span class="pfile mono \${s.promptMissing ? "missing" : ""}">\${esc(s.run || s.prompt)}\${s.promptMissing ? " — FILE NOT FOUND" : \` · \${s.promptChars} chars\`}</span>
     </div>
+    \${s.resumePrompt ? \`<div class="io"><span class="lbl">resume prompt</span>
+      <span class="pfile mono \${s.resumePromptMissing ? "missing" : ""}">\${esc(s.resumePrompt)}\${s.resumePromptMissing ? " — FILE NOT FOUND" : \` · \${s.resumePromptChars} chars\`}</span>
+    </div>\` : ""}
   </div>\`;
 }
 

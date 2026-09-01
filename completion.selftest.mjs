@@ -274,6 +274,91 @@ eq(
 eq("the second completion attempt passes", retry.record.stageLog[1].completion.ok, true);
 rmSync(retry.root, { recursive: true, force: true });
 
+const continuation = runYamlCase(
+  "completion-continuation",
+  (root) => {
+    writeFileSync(path.join(root, "prompt.md"), "ORIGINAL DISCOVERY PROMPT\n");
+    writeFileSync(
+      path.join(root, "check.mjs"),
+      [
+        "import { existsSync, writeFileSync } from 'node:fs';",
+        `const marker = ${JSON.stringify(path.join(root, "check-seen"))};`,
+        "if (!existsSync(marker)) {",
+        "  writeFileSync(marker, 'seen');",
+        "  console.error('first failure line');",
+        "  console.error('second failure line');",
+        "  process.exit(1);",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    return [
+      "name: completion-continuation",
+      "defaults: { model: gpt-5.6-sol }",
+      "stages:",
+      "  - id: build",
+      "    prompt: prompt.md",
+      "    tools: false",
+      "    resume: true",
+      "    completion:",
+      `      run: node ${path.join(root, "check.mjs")}`,
+      "      attempts: 2",
+      "completion: { run: 'true', attempts: 1 }",
+      "",
+    ].join("\n");
+  },
+  {
+    copilotBody: [
+      "#!/usr/bin/env node",
+      "import { appendFileSync } from 'node:fs';",
+      `const log = ${JSON.stringify(path.join(scratch, "completion-continuation", "invocations.jsonl"))};`,
+      "const prompt = process.argv[process.argv.indexOf('-p') + 1];",
+      "const sessionArg = process.argv.find((a) => a.startsWith('--session-id'));",
+      "const sessionId = sessionArg?.includes('=') ? sessionArg.split('=').slice(1).join('=') : process.argv[process.argv.indexOf('--session-id') + 1];",
+      "appendFileSync(log, JSON.stringify({ prompt, sessionId }) + '\\n');",
+      "console.log(JSON.stringify({ type: 'assistant.message', data: { model: 'gpt-5.6-sol', outputTokens: 3, content: 'done' } }));",
+      "console.log(JSON.stringify({ type: 'result', data: { sessionId } }));",
+      "",
+    ].join("\n"),
+  },
+);
+const continuationCalls = readFileSync(path.join(continuation.root, "invocations.jsonl"), "utf8")
+  .trim()
+  .split("\n")
+  .map(JSON.parse);
+const continuationLogDir = path.join(
+  continuation.results,
+  "chain-runs",
+  "logs",
+  readdirSync(path.join(continuation.results, "chain-runs", "logs"))[0],
+);
+const continuationEvents = readFileSync(path.join(continuationLogDir, "_events.jsonl"), "utf8")
+  .trim()
+  .split("\n")
+  .map(JSON.parse);
+eq(
+  "completion integration keeps the same CLI session",
+  new Set(continuationCalls.map((call) => call.sessionId)).size,
+  1,
+);
+eq(
+  "completion integration records initial then continuation prompt modes",
+  continuation.record.stageLog.map((row) => row.promptMode),
+  ["initial", "completion-continuation"],
+);
+eq(
+  "completion integration excludes the initial prompt from the resumed retry",
+  continuationCalls[1].prompt.includes("ORIGINAL DISCOVERY PROMPT"),
+  false,
+);
+eq(
+  "completion event journal preserves the first failure reason",
+  continuationEvents[0].check.output.includes("first failure line") &&
+    continuationEvents[0].check.output.includes("second failure line"),
+  true,
+);
+rmSync(continuation.root, { recursive: true, force: true });
+
 const artifactAgent = [
   "#!/usr/bin/env node",
   `console.log(${JSON.stringify(

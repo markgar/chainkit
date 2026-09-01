@@ -170,31 +170,55 @@ export async function readDesign(root, file) {
 
   const view = stages.map((s) => {
     const promptFile = s.prompt ? path.resolve(promptRoot, s.prompt) : null;
-    let uses = [];
+    const resumePromptFile = s.resumePrompt ? path.resolve(promptRoot, s.resumePrompt) : null;
+    let initialUses = [];
+    let resumeUses = [];
     const promptMissing = !!promptFile && !existsSync(promptFile);
+    const resumePromptMissing = !!resumePromptFile && !existsSync(resumePromptFile);
     let promptChars = 0;
+    let resumePromptChars = 0;
     if (s.run) {
       promptChars = s.run.length;
-      uses = [
+      initialUses = [
         ...new Set([...s.run.matchAll(/\{\{\s*([\w.]+)\s*\}\}/g)].map((m) => m[1].split(".")[0])),
       ];
     } else if (!promptMissing) {
       const text = readFileSync(promptFile, "utf8");
       promptChars = text.length;
-      uses = [
+      initialUses = [
         ...new Set([...text.matchAll(/\{\{\s*([\w.]+)\s*\}\}/g)].map((m) => m[1].split(".")[0])),
       ];
     }
+    if (resumePromptFile && !resumePromptMissing) {
+      const text = readFileSync(resumePromptFile, "utf8");
+      resumePromptChars = text.length;
+      resumeUses.push(
+        ...[...text.matchAll(/\{\{\s*([\w.]+)\s*\}\}/g)].map((m) => m[1].split(".")[0]),
+      );
+    }
+    const uses = [...new Set([...initialUses, ...resumeUses])];
+    const initialVisible = new Set(produced);
+    const resumeVisible = new Set(produced);
+    if (s.produces) resumeVisible.add(s.produces);
     const row = {
       ...s,
       prompt: s.prompt,
       promptFile,
       promptMissing,
       promptChars,
+      resumePrompt: s.resumePrompt,
+      resumePromptFile,
+      resumePromptMissing,
+      resumePromptChars,
       uses,
       // Unresolved inputs are shown per stage rather than only in the error list,
       // so the break is visible AT the stage that breaks.
-      unresolved: uses.filter((u) => !produced.has(u)),
+      unresolved: [
+        ...new Set([
+          ...initialUses.filter((u) => !initialVisible.has(u)),
+          ...resumeUses.filter((u) => !resumeVisible.has(u)),
+        ]),
+      ],
       inLoop: loopIds.has(s.id),
       inCompletionRepair: completionRepairIds.has(s.id),
       inForeachCompletionRepair: foreachCompletionRepairIds.has(s.id),

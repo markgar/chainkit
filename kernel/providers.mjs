@@ -296,7 +296,7 @@ function cliComplete({
       const usage = telemetry.parsed
         ? {
             input: null,
-            output: telemetry.outputTokensTotal || null,
+            output: telemetry.outputTokensTotal ?? null,
             total: null,
             premiumRequests: telemetry.usage.premiumRequests,
             apiMs: telemetry.usage.totalApiDurationMs,
@@ -367,7 +367,7 @@ function replayFromDisk({ replayDir, label, logDir, timeoutMs }) {
   const usage = telemetry.parsed
     ? {
         input: null,
-        output: telemetry.outputTokensTotal || null,
+        output: telemetry.outputTokensTotal ?? null,
         total: null,
         premiumRequests: telemetry.usage.premiumRequests,
         apiMs: telemetry.usage.totalApiDurationMs,

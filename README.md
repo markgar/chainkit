@@ -50,7 +50,11 @@ When a command exists only to decide whether a model stage has finished its own 
     attempts: 3
 ```
 
-Chainkit appends this requirement to the stage's initial prompt, then runs the command independently after every turn. A failure is captured and sent back to the same stage; with `resume: true`, the same CLI conversation continues with the exact error. The stage cannot finish until the command passes. It halts on the declared bound, on a repeated failure with no file change, or if the supposedly read-only completion command changes the repository, index, or HEAD.
+Chainkit appends this requirement to the stage's initial prompt, then runs the command independently after every turn. A failure is captured and sent back to the same stage. With `resume: true`, later completion attempts continue the same CLI conversation with only a compact message containing the exact frozen command, attempt number, bounded failure output, and an instruction to return a complete replacement answer without repeating discovery. With `resume: false`, each retry is fresh and therefore receives the full initial prompt plus the failure context. Provider transport retries remain identical request retries because they have no intervening answer or tool context. The stage cannot finish until the command passes. It halts on the declared bound, on a repeated failure with no file change, or if the supposedly read-only completion command changes the repository, index, or HEAD.
+
+A resumed stage may also declare `resumePrompt: prompts/continue.md`. On a later loop invocation that is not repairing a deterministic completion failure, Chainkit renders this smaller authored prompt instead of replaying the initial prompt. `resumePrompt` is optional for compatibility, requires `resume: true`, and is validated and rendered with the same placeholder reachability rules as `prompt`.
+
+Output-token telemetry uses the current CLI's `model.model_call_success.data.responseUsage.completion_tokens` as the authoritative source, with legacy `assistant.message.data.outputTokens` only as a fallback. Mixed streams are therefore counted once, while streams with no token telemetry remain explicitly unreported rather than appearing as zero.
 
 **A command READS artifacts from a file, not from `{{...}}`.** Interpolation is right for a scalar (`pnpm test {{chunk.id}}`) and wrong for a structured artifact: `render` serialises an object as pretty-printed multi-line JSON, which is exactly what a prompt wants and is unsafe inside `bash -c` — a value containing an apostrophe, a backtick or a `$` is not rejected, it is silently mangled or executed. So every run stage is handed the whole store as a file instead:
 
@@ -117,9 +121,11 @@ Completion is optional. A successful chain with no top-level completion exits su
     examples/NN-name/    one worked chain per directory: chain.yaml, its prompts, a README
     fixtures/<name>/     greenfield graders — the objective definition of done
     extensions/          the two canvases: a live run dashboard and a chain designer
-    results/chain-runs/  one JSON record per run + per-stage raw JSONL under logs/
+    results/chain-runs/  one JSON record per run + raw logs and live _calls/_events journals
 
 A chain is a `.yaml` file (YAML because it takes comments, and the reasons behind a roster are worth writing down). A prompt is a `.md` file in a `prompts/` directory beside it; `{{artifact}}` is interpolated.
+
+`_events.jsonl` is append-only additive observability. Immediately after every stage, foreach-item, and chain completion check, Chainkit writes a generic `completion.checked` event with timestamp, scope, stage/iteration/round/attempt identity where applicable, and the bounded check result: exact command, status, exit code, and failure output. Raw provider JSONL, `_calls.jsonl`, and the final run record keep their existing roles. The runs canvas polls the event journal so a failed stage check is visible on its matching attempt before the final record exists; once written, that record remains authoritative.
 
 ## The project check
 
