@@ -777,8 +777,52 @@ function readEvents(runDir) {
   return events;
 }
 
+function commandLifecycles(events) {
+  const calls = new Map();
+  for (const event of events) {
+    if (!/^command\.stage\.(started|completed|failed)$/.test(event?.type || "")) continue;
+    const identity = event.identity || {};
+    if (!identity.stage) continue;
+    const key =
+      `${identity.stage}/${identity.iter || 0}/${identity.round || 0}/` +
+      `${identity.attempt || 0}`;
+    const current = calls.get(key) || {
+      id: identity.stage,
+      seq: identity.seq,
+      iter: identity.iter || 0,
+      round: identity.round || 0,
+      attempt: identity.attempt || 0,
+      status: "running",
+    };
+    if (event.type === "command.stage.started") {
+      current.command = event.command || current.command;
+      current.artifact = event.artifact ?? current.artifact ?? null;
+      current.startedAt = event.startedAt || event.timestamp || current.startedAt;
+    } else {
+      Object.assign(current, event.result || {});
+      current.status = event.type.endsWith(".completed") ? "completed" : "failed";
+      current.finishedAt = event.result?.finishedAt || event.timestamp || current.finishedAt;
+    }
+    calls.set(key, current);
+  }
+  return [...calls.values()].sort(
+    (a, b) => (a.seq ?? Number.MAX_SAFE_INTEGER) - (b.seq ?? Number.MAX_SAFE_INTEGER),
+  );
+}
+
+function mergeOrder(callOrder, commands) {
+  const order = callOrder ? new Map(callOrder) : new Map();
+  for (const command of commands) {
+    if (command.seq == null) continue;
+    const key = `${command.id}/${command.iter || 0}/${command.round || 0}/${command.attempt || 0}`;
+    if (!order.has(key)) order.set(key, command.seq);
+  }
+  return order.size ? order : null;
+}
+
 export function readRun(runDir, root) {
   const stages = [];
+  const base = path.basename(runDir);
   let names;
   try {
     names = readdirSync(runDir).filter((n) => {
@@ -804,7 +848,42 @@ export function readRun(runDir, root) {
   }
   const planned = new Map((plan?.stages || []).map((s) => [s.id, s]));
   const events = readEvents(runDir);
-  const preOrder = readCallOrder(runDir);
+  let summary = null;
+  const summaryFile = path.join(root, "results", "chain-runs", `${base}.json`);
+  if (existsSync(summaryFile)) {
+    try {
+      summary = JSON.parse(readFileSync(summaryFile, "utf8"));
+    } catch {
+      /* mid-write */
+    }
+  }
+  const commandCalls = commandLifecycles(events);
+  const commandByIdentity = new Map(
+    commandCalls.map((command) => [
+      `${command.id}/${command.iter || 0}/${command.round || 0}/${command.attempt || 0}`,
+      command,
+    ]),
+  );
+  for (const entry of summary?.stageLog || []) {
+    if (!entry.commandResult) continue;
+    const key = `${entry.id}/${entry.iter || 0}/${entry.round || 0}/${entry.attempt || 0}`;
+    const existing = commandByIdentity.get(key) || {};
+    commandByIdentity.set(key, {
+      ...existing,
+      id: entry.id,
+      iter: entry.iter || 0,
+      round: entry.round || 0,
+      attempt: entry.attempt || 0,
+      ...entry.commandResult,
+    });
+  }
+  commandCalls.length = 0;
+  commandCalls.push(
+    ...[...commandByIdentity.values()].sort(
+      (a, b) => (a.seq ?? Number.MAX_SAFE_INTEGER) - (b.seq ?? Number.MAX_SAFE_INTEGER),
+    ),
+  );
+  const preOrder = mergeOrder(readCallOrder(runDir), commandCalls);
 
   const groups = [];
   for (const dirName of names.sort()) {
@@ -927,6 +1006,67 @@ export function readRun(runDir, root) {
     }
   }
 
+  // Command stages do not produce model-call JSONL, so their lifecycle journal is
+  // their live row. Group attempts into the same per-round row shape model stages
+  // use, while preserving exact foreach and loop identity.
+  const commandGroups = new Map();
+  for (const command of commandCalls) {
+    const key = `${command.id}/${command.iter || 0}/${command.round || 0}`;
+    if (!commandGroups.has(key)) commandGroups.set(key, []);
+    commandGroups.get(key).push(command);
+  }
+  for (const commands of commandGroups.values()) {
+    const first = commands[0];
+    let st = stages.find(
+      (row) =>
+        row.id === first.id &&
+        (row.iter || 0) === (first.iter || 0) &&
+        (row.round || 0) === (first.round || 0),
+    );
+    if (!st) {
+      const p = planned.get(first.id) || {};
+      st = {
+        id: first.id,
+        ord: p.ord ?? 0,
+        iter: first.iter || 0,
+        round: first.round || 0,
+        attempt: first.attempt || 0,
+        key:
+          `${first.id}${first.iter ? `#${first.iter}` : ""}` +
+          `${first.round ? `#r${first.round}` : ""}`,
+        label: first.iter ? `${first.id} · ${first.iter}` : first.id,
+        rounds: [],
+        aiu: 0,
+        aiuKnown: false,
+        outputTokens: null,
+        truncated: 0,
+        outputCeiling: null,
+        tools: 0,
+        unmetered: 0,
+        model: "",
+        metricsApplicable: false,
+        noModelCalls: true,
+        inFlight: false,
+      };
+      stages.push(st);
+    }
+    st.commandRuns = commands;
+    const latest = commands.at(-1);
+    st.status = latest?.status || "running";
+    const timeoutMs = planned.get(first.id)?.timeoutMs;
+    const expiresAfter = Math.max(90_000, Number(timeoutMs || 0) + 30_000);
+    if (
+      !summary &&
+      st.status === "running" &&
+      Date.now() - Date.parse(latest.startedAt || 0) > expiresAfter
+    ) {
+      latest.status = "interrupted";
+      st.status = "interrupted";
+    }
+    st.inFlight = st.status === "running";
+    st.wallMs = commands.reduce((n, command) => n + (command.wallMs || 0), 0);
+  }
+
   // Stages the chain declared that have not started. Without these the view cannot
   // distinguish "three stages in" from "halted after three stages" while a run is
   // live -- both look like a chain with three stages.
@@ -968,6 +1108,9 @@ export function readRun(runDir, root) {
     tools: 0,
     unmetered: 0,
     model: p.model || "",
+    metricsApplicable: !p.run,
+    aiuKnown: p.run ? false : undefined,
+    noModelCalls: !!p.run,
     inFlight: false,
     status: "pending",
   });
@@ -977,20 +1120,6 @@ export function readRun(runDir, root) {
     if (elems.length) for (const it of elems) stages.push(pendingRow(p, it));
     else stages.push(pendingRow(p, 0));
   }
-  // Record JSON exists only after the run ends -- optional enrichment. Read BEFORE
-  // ordering: its `stageLog` is written in execution order, so a run recorded
-  // before the call journal existed still orders exactly rather than by inference.
-  let summary = null;
-  const base = path.basename(runDir);
-  const summaryFile = path.join(root, "results", "chain-runs", `${base}.json`);
-  if (existsSync(summaryFile)) {
-    try {
-      summary = JSON.parse(readFileSync(summaryFile, "utf8"));
-    } catch {
-      /* mid-write */
-    }
-  }
-
   // Order, best source first: the live call journal, then the finished record,
   // then inference.
   let order = preOrder;
@@ -1015,6 +1144,8 @@ export function readRun(runDir, root) {
       resumeFrom: p.resumeFrom,
       produces: p.produces,
       parse: p.parse,
+      run: p.run || null,
+      timeoutMs: p.timeoutMs ?? null,
       inLoop: p.inLoop,
       inCompletionRepair: p.inCompletionRepair,
       inForeachCompletionRepair: p.inForeachCompletionRepair,
@@ -1165,6 +1296,16 @@ export function readRun(runDir, root) {
       // is otherwise indistinguishable from a checked one. The run record carries the
       // fact; without this the canvas would show a normal green stage.
       st.declaredToolsUnused = entries.some((e) => e.declaredToolsUnused) || false;
+      const commandRuns = entries
+        .filter((e) => e.commandResult)
+        .map((e) => ({
+          id: e.id,
+          iter: e.iter || 0,
+          round: e.round || 0,
+          attempt: e.attempt || 0,
+          ...e.commandResult,
+        }));
+      if (commandRuns.length) st.commandRuns = commandRuns;
     }
   }
   // Round-over-round artifact values, so a loop can be read as converging or
@@ -1179,7 +1320,13 @@ export function readRun(runDir, root) {
   } catch {
     /* pre-manifest run */
   }
-  const newest = Math.max(0, planMtime, ...all.map((c) => c.mtime));
+  let eventsMtime = 0;
+  try {
+    eventsMtime = statSync(path.join(runDir, "_events.jsonl")).mtimeMs;
+  } catch {
+    /* pre-event run */
+  }
+  const newest = Math.max(0, planMtime, eventsMtime, ...all.map((c) => c.mtime));
   const totals = {
     // Safe to sum here ONLY because `applyMarginalAiu` already turned each call's
     // session-cumulative checkpoint into that call's own cost. The comment that
@@ -1204,7 +1351,11 @@ export function readRun(runDir, root) {
     stages: new Set(stages.map((s) => s.id)).size,
   };
 
-  const live = !summary && (all.some((c) => c.inFlight) || Date.now() - newest < 90_000);
+  const live =
+    !summary &&
+    (all.some((c) => c.inFlight) ||
+      stages.some((stage) => stage.status === "running") ||
+      Date.now() - newest < 90_000);
   const unit = (plan?.foreach?.as || "").trim() || "element";
   return {
     id: base,

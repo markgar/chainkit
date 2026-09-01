@@ -101,6 +101,8 @@ export function page() {
   /* The stage running RIGHT NOW is the only one that should be loud. */
   .stage.s-running { background: rgba(127,127,127,.13);
                      border-color: var(--accent, #0969da); }
+  .stage.s-failed { border-color: var(--bad); background: rgba(248,81,73,.07); }
+  .stage.s-interrupted { border-color: var(--warn); background: rgba(210,153,34,.07); }
   /* Element boundary in a fan-out. The rows are element-major, so this is where
      one chunk's work ends and the next begins. Sized as a real section header --
      an element's stages run to thousands of lines, so this is the only thing on
@@ -190,6 +192,8 @@ export function page() {
   .sid { font-size: 18px; line-height: 1.15; font-weight: 750; letter-spacing: .025em;
          text-transform: uppercase; color: var(--accent, #0969da); }
   .stage.s-ran .sid { font-weight: 500; color: var(--text-color-default, #1f2328); }
+  .stage.s-completed .sid { font-weight: 500; color: var(--text-color-default, #1f2328); }
+  .stage.s-failed .sid { color: var(--bad); }
   .say { margin: 6px 10px 8px 14px; padding: 7px 9px; border-radius: 6px; white-space: pre-wrap;
          background: var(--background-color-muted, #f6f8fa);
          border-left: 3px solid var(--true-color-blue-muted, #54aeff); overflow-wrap: anywhere; }
@@ -241,6 +245,30 @@ export function page() {
   .jbool { font-family: var(--font-mono, monospace); font-weight: 600; }
   .jbool.yes { color: var(--true-color-green, #3fb950); }
   .jbool.no { color: var(--true-color-red, #f85149); }
+  .command-runs { display: grid; gap: 7px; margin: 0 0 8px 26px; }
+  .command-run { border: 1px solid var(--border-color-default, #d0d7de); border-radius: 8px;
+                 overflow: hidden; background: var(--background-color-default, #fff); }
+  .command-run.failed { border-color: var(--bad); }
+  .command-run > summary { cursor: pointer; display: flex; gap: 8px; align-items: center;
+                           padding: 7px 9px; background: var(--background-color-muted, #f6f8fa);
+                           list-style: none; }
+  .command-run > summary::-webkit-details-marker { display: none; }
+  .command-state { font-weight: 650; }
+  .command-state.completed { color: var(--ok); }
+  .command-state.failed { color: var(--bad); }
+  .command-state.running { color: var(--warn); }
+  .command-state.interrupted { color: var(--warn); }
+  .command-body { padding: 8px 9px; display: grid; gap: 8px; }
+  .command-field { display: grid; gap: 3px; }
+  .command-label { color: var(--muted); font-size: 10px; font-weight: 650;
+                   text-transform: uppercase; letter-spacing: .04em; }
+  .command-code, .command-output { margin: 0; padding: 7px 8px; border-radius: 6px;
+                                   background: var(--background-color-muted, #f6f8fa);
+                                   white-space: pre-wrap; overflow-wrap: anywhere;
+                                   max-height: 220px; overflow: auto; font-size: 11px; }
+  .command-meta { display: flex; gap: 8px; flex-wrap: wrap; color: var(--muted); font-size: 11px; }
+  .command-artifact { border-left: 3px solid var(--accent, #0969da); padding-left: 8px; }
+  .command-preview { max-height: 300px; overflow: auto; }
 </style>
 </head>
 <body>
@@ -548,6 +576,76 @@ function render(s) {
       }</div></div>\`).join("")}</div>\`;
   }
 
+  const duration = (ms) =>
+    ms == null ? "duration pending" : ms >= 1000 ? (ms / 1000).toFixed(1) + "s" : ms + "ms";
+  function shapeText(shape) {
+    if (!shape) return "type not available";
+    if (shape.type === "array") return "array[" + shape.length + "]" +
+      (shape.elementTypes?.length ? " · " + shape.elementTypes.join("/") : "");
+    if (shape.type === "object") return "object · " + shape.keyCount + " key" +
+      (shape.keyCount === 1 ? "" : "s");
+    return shape.type;
+  }
+  function countsText(value) {
+    if (!value) return "";
+    const parts = [];
+    if (value.bytes != null) parts.push(value.bytes.toLocaleString() + " B");
+    if (value.characters != null) parts.push(value.characters.toLocaleString() + " chars");
+    if (value.lines != null) parts.push(value.lines.toLocaleString() + " lines");
+    if (value.truncated) parts.push("preview bounded");
+    return parts.join(" · ");
+  }
+  function commandHtml(st) {
+    const runs = st.commandRuns || [];
+    if (!runs.length) return "";
+    return \`<div class="command-runs">\${runs.map((r, index) => {
+      const status = r.status || (r.ok === false ? "failed" : r.ok === true ? "completed" : "running");
+      const command = r.command?.text || st.declared?.run || "";
+      const result =
+        status === "running"
+          ? "running"
+          : status === "interrupted"
+            ? "completion not observed"
+          : (r.ok ? "success" : "failure") + " · exit " + (r.exitCode == null ? "not available" : r.exitCode);
+      const a = r.artifact;
+      const artifact = !a
+        ? '<div class="command-meta"><span>No artifact declared; stdout/stderr are the result.</span></div>'
+        : \`<div class="command-field command-artifact">
+            <div class="command-label">\${a.state === "produced" ? "Produced artifact" : a.state === "candidate" ? "Rejected artifact candidate" : "Declared artifact"}</div>
+            <div><b>\${esc(a.name)}</b> · \${esc(a.parse || "text")} · \${esc(shapeText(a.shape))}</div>
+            <div class="command-meta">\${esc(countsText(a))}</div>
+            \${Object.hasOwn(a, "preview")
+              ? \`<div class="command-preview">\${a.parse === "json"
+                  ? jsonHtml(a.preview, 0)
+                  : \`<pre class="command-output mono">\${esc(a.preview)}</pre>\`}</div>\`
+              : '<div class="command-meta">preview available when the command completes</div>'}
+          </div>\`;
+      const stdout = r.stdout?.preview
+        ? \`<div class="command-field"><div class="command-label">stdout · \${esc(countsText(r.stdout))}</div><pre class="command-output mono">\${esc(r.stdout.preview)}</pre></div>\`
+        : "";
+      const stderr = r.stderr?.preview
+        ? \`<div class="command-field"><div class="command-label">stderr · \${esc(countsText(r.stderr))}</div><pre class="command-output mono">\${esc(r.stderr.preview)}</pre></div>\`
+        : "";
+      const diagnostic = r.diagnostic?.preview
+        ? \`<div class="command-field"><div class="command-label">diagnostic</div><pre class="command-output mono">\${esc(r.diagnostic.preview)}</pre></div>\`
+        : "";
+      return \`<details class="command-run \${status}" \${index === runs.length - 1 ? "open" : ""}>
+        <summary>
+          <span class="caret">▸</span>
+          <span class="tag">attempt \${(r.attempt || 0) + 1}</span>
+          <span class="command-state \${status}">\${status === "completed" ? "✓ completed" : status === "failed" ? "✗ failed" : status === "interrupted" ? "◇ completion not observed" : "◐ started"}</span>
+          <span class="detail">\${esc(result)} · \${esc(duration(r.wallMs))}</span>
+          <span class="grow"></span>
+          <span class="detail">model · AiU · tokens: not applicable</span>
+        </summary>
+        <div class="command-body">
+          <div class="command-field"><div class="command-label">Command\${r.command?.truncated ? " · bounded preview" : ""}</div><pre class="command-code mono">\${esc(command)}</pre></div>
+          \${artifact}\${stdout}\${stderr}\${diagnostic}
+        </div>
+      </details>\`;
+    }).join("")}</div>\`;
+  }
+
   // Whether THIS call continued a previous one's conversation. Rendered as a plain
   // channel pill, the same weight as "reasons only" and the expects contract: it is
   // a routine property of a resumed stage's later rounds. It was a bordered YELLOW
@@ -588,6 +686,8 @@ function render(s) {
     if (st.status === "skipped" || st.status === "unreached") return "";
     if (st.declared && st.declared.tools === false)
       bits.push('<span class="chan">reasons only</span>');
+    if (st.declared?.run || st.commandRuns?.length)
+      bits.push('<span class="chan">command · model/AiU/tokens not applicable</span>');
     if (st.declared?.inLoop) bits.push('<span class="chan">in loop</span>');
     if (st.declared?.inCompletionRepair)
       bits.push('<span class="chan">chain completion repair</span>');
@@ -690,7 +790,7 @@ function render(s) {
         <span class="swatch" style="background:\${idHue(st.id)}"></span>
         <span class="sid">\${esc(hasElements ? st.id : st.label || st.id)}</span>
         \${st.round ? \`<span class="round" title="loop round">r\${st.round}</span>\` : ""}
-        <span class="detail mono">\${esc(st.model || "")}</span>
+        <span class="detail mono">\${esc(st.commandRuns?.length || st.declared?.run ? "command" : st.model || "")}</span>
         \${st.truncated ? \`<span class="cut" title="the provider stopped this response at the output ceiling\${
           st.outputCeiling ? " of " + st.outputCeiling.toLocaleString() + " tokens" : ""
         }, so the text below is a fragment">cut off\${st.truncated > 1 ? " \u00d7" + st.truncated : ""}</span>\` : ""}
@@ -699,6 +799,7 @@ function render(s) {
           st.status === "pending" ? "not started"
           : st.status === "skipped" ? "skipped \u2014 never needed"
           : st.status === "unreached" ? "never reached \u2014 the run halted first"
+          : st.commandRuns?.length ? \`\${st.status} · \${duration(st.wallMs)}\`
           : st.status === "running" && st.noModelCalls ? "running now"
           : st.noModelCalls ? "ran \u2014 no model call" + (st.wallMs ? " \u00b7 " + (st.wallMs >= 1000 ? (st.wallMs / 1000).toFixed(1) + "s" : st.wallMs + "ms") : "")
           : \`\${st.rounds.length > 1 ? st.rounds.length + " calls · " : ""}\${st.tools} tools · \${
@@ -709,6 +810,7 @@ function render(s) {
       \${channels(st)}
       \${exitCriterion(st)}
       \${completionFailures(st)}
+      \${commandHtml(st)}
       \${st.rounds.map((p) => {
         const key = (st.key || st.id) + "/" + p.label;
         const isOpen = key === activeKey;
