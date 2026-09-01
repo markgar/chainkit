@@ -156,6 +156,7 @@ export function page() {
      the group size. Fixed-width even when empty, so the status column never shifts. */
   .par { width: 22px; flex: none; text-align: right; font-size: 11px; color: var(--accent, #0969da); }
   .step.pgrp { border-left: 2px solid var(--accent, #0969da); padding-left: 12px; }
+  .step.pgrp-end + .step.pgrp-start { margin-top: 4px; }
   .st.ok { color: var(--ok); } .st.failed { color: var(--bad); } .st.running { color: var(--warn); }
   /* min-width, NOT width: this was a fixed 58px column, and every tool name
      longer than that (repo_read, ts_outline, ts_symbol) overflowed its box and
@@ -293,6 +294,10 @@ const sayHtml = (t) =>
     .replace(/^(#{1,6})\\s+(.*)$/gm, (_m, _h, s) => '<b class="mdh">' + s + "</b>")
     .replace(/\\*\\*([^*\\n]+)\\*\\*/g, "<strong>$1</strong>")
     .replace(/\\x60([^\\x60\\n]+)\\x60/g, "<code>$1</code>");
+const stepHtml = (x, truncated) =>
+  x.kind === "say"
+    ? \`<div class="say\${truncated ? " cut-body" : ""}">\${sayHtml(sayText(x.text))}</div>\`
+    : \`<div class="step\${x.par > 1 ? " pgrp" + (x.parFirst ? " pgrp-start" : "") + (x.parLast ? " pgrp-end" : "") : ""}"><span class="par">\${x.par > 1 && x.parFirst ? "\\u2225" + x.par : ""}</span><span class="st \${x.status}">\${x.status === "ok" ? "✓" : x.status === "failed" ? "✗" : x.status === "running" ? "◐" : "·"}</span><span class="tool">\${esc(x.name)}</span><span class="detail mono">\${esc(x.detail)}</span></div>\`;
 // Render a stage's structured output as STRUCTURE rather than a wall of JSON.
 // The view still does not interpret keys -- it lays out objects, arrays and
 // scalars and nothing else -- so it stays correct for any chain. What it removes
@@ -623,10 +628,8 @@ function render(s) {
         const flight = p.inFlight ? '<span class="dot live" title="call in flight"></span>' : "";
         const out = outputHtml(p.output);
         const toolw = Math.max(10, ...p.steps.filter(x => x.kind !== "say").map(x => (x.name || "").length + 1));
-        const steps = p.steps.map(x => x.kind === "say"
-          ? \`<div class="say\${st.truncated ? " cut-body" : ""}">\${sayHtml(sayText(x.text))}</div>\`
-          : \`<div class="step\${x.par > 1 ? " pgrp" : ""}"><span class="par">\${x.par > 1 && x.parFirst ? "\\u2225" + x.par : ""}</span><span class="st \${x.status}">\${x.status === "ok" ? "✓" : x.status === "failed" ? "✗" : x.status === "running" ? "◐" : "·"}</span><span class="tool">\${esc(x.name)}</span><span class="detail mono">\${esc(x.detail)}</span></div>\`
-        ).join("") || (out ? "" : '<div class="step"><span class="detail">no tool calls recorded</span></div>');
+        const steps = p.steps.map(x => stepHtml(x, st.truncated)).join("")
+          || (out ? "" : '<div class="step"><span class="detail">no tool calls recorded</span></div>');
         return \`<div class="call \${isOpen ? "open" : ""}" data-key="\${esc(key)}">
           <button type="button" class="chead" aria-expanded="\${isOpen}" aria-controls="\${esc(panelId)}">
             <span class="caret">\${isOpen ? "▾" : "▸"}</span>

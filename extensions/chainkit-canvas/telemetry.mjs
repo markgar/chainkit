@@ -298,6 +298,7 @@ export function annotateConcurrency(steps, lastAt = null) {
       v.s.par = g.items.length;
       v.s.parGroup = g.id;
       v.s.parFirst = i === 0;
+      v.s.parLast = i === g.items.length - 1;
     }
 
   const ev = iv.flatMap((v) => [

@@ -964,6 +964,11 @@ rmSync(root, { recursive: true, force: true });
     true,
   );
   eq(
+    "adjacent parallel groups get one dense spacing break",
+    html.includes(".step.pgrp-end + .step.pgrp-start { margin-top: 4px; }"),
+    true,
+  );
+  eq(
     "refresh failures visibly mark retained telemetry as stale",
     html.includes("RECONNECTING · data ") &&
       html.includes("last successful snapshot remains visible"),
@@ -1187,6 +1192,24 @@ rmSync(root, { recursive: true, force: true });
     sayHtml("call " + String.fromCharCode(96) + "esc()" + String.fromCharCode(96)),
     "call <code>esc()</code>",
   );
+  const stepFrom = src.indexOf("const stepHtml =");
+  const stepDecl = src.slice(stepFrom, src.indexOf(";\n// Render a stage", stepFrom) + 1);
+  const stepCtx = { out: null, esc: hCtx.esc, sayHtml, sayText };
+  vm.createContext(stepCtx);
+  new vm.Script(stepDecl + "\nout = stepHtml;").runInContext(stepCtx);
+  const stepHtml = stepCtx.out;
+  const adjacentGroups = [
+    { kind: "tool", name: "a", detail: "", status: "ok", par: 2, parFirst: true },
+    { kind: "tool", name: "b", detail: "", status: "ok", par: 2, parLast: true },
+    { kind: "tool", name: "c", detail: "", status: "ok", par: 2, parFirst: true },
+    { kind: "tool", name: "d", detail: "", status: "ok", par: 2, parLast: true },
+  ].map((x) => stepHtml(x, false));
+  eq(
+    "parallel group rows render explicit start and end boundaries",
+    adjacentGroups.map((row) => row.match(/class="([^"]+)"/)[1]),
+    ["step pgrp pgrp-start", "step pgrp pgrp-end", "step pgrp pgrp-start", "step pgrp pgrp-end"],
+  );
+  eq("the first-row parallel marker stays unchanged", adjacentGroups[0].includes("∥2"), true);
   // The whole reason markup is applied AFTER escaping.
   eq(
     "model output cannot inject html",
@@ -1380,6 +1403,24 @@ rmSync(root, { recursive: true, force: true });
       "only the first row carries the badge",
       [steps[0].parFirst, steps[1].parFirst],
       [true, false],
+    );
+    eq(
+      "group boundaries mark the first and last row",
+      steps.map((step) => [step.parFirst, step.parLast]),
+      [
+        [true, false],
+        [false, true],
+      ],
+    );
+  }
+
+  {
+    const steps = [tool(t(0), t(4)), tool(t(1), t(3)), tool(t(5), t(9)), tool(t(6), t(8))];
+    annotateConcurrency(steps);
+    eq(
+      "adjacent parallel groups remain distinct",
+      steps.map((step) => step.parGroup),
+      [0, 0, 1, 1],
     );
   }
 
