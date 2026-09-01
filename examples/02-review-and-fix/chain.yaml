@@ -2,7 +2,7 @@
 #
 # Exactly one construct added to rung 01: a second and third stage, and the
 # artifact that carries a value between them. Same job, same spec, same builder
-# model, same grader, same gate.
+# model, same grader, same completion command.
 #
 # This rung also introduces SUPPORTING DOCS -- `docs/conventions.md`, the standard
 # the builder writes to, and `docs/review-rubric.md`, what counts as a finding.
@@ -64,4 +64,6 @@ stages:
 # Note what this rung does NOT have: the fix runs exactly once, and it runs even
 # when the review passed. Making the repair conditional and repeatable is the
 # next rung's one added construct.
-gate: "git diff --quiet HEAD -- acceptance && node --test acceptance/*.test.js"
+completion:
+  run: "git diff --quiet HEAD -- acceptance && node --test acceptance/*.test.js"
+  attempts: 1

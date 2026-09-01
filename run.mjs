@@ -4,7 +4,7 @@
 //   node run.mjs --chain examples/01-single-stage/chain.yaml --workdir /abs/path [--tag t1]
 //
 // The kernel is generic: it calls the CLI, renders prompts from an artifact store,
-// gathers telemetry, records the run, and runs the declared gate. WHICH models, in
+// gathers telemetry, records the run, and runs declared completion. WHICH models, in
 // WHICH order, with WHICH prompts is config. Adding a stage is a config edit.
 
 import { mkdirSync, writeFileSync, readFileSync, existsSync, appendFileSync } from "node:fs";
@@ -29,6 +29,7 @@ import {
 } from "./kernel/foreach.mjs";
 import { reduceCumulative } from "./kernel/cost.mjs";
 import { treeSnapshot, treeDelta, repositorySnapshot } from "./kernel/tree.mjs";
+import { runCompletion } from "./kernel/completion.mjs";
 
 const arg = (n, d) => {
   const i = process.argv.indexOf(`--${n}`);
@@ -70,16 +71,10 @@ if (errors.length) {
 
 const stages = resolveStages(chain);
 const byId = new Map(stages.map((s) => [s.id, s]));
-const gateSpec =
-  typeof chain.gate === "string"
-    ? { run: chain.gate, repair: null }
-    : chain.gate
-      ? {
-          run: chain.gate.run,
-          repair: chain.gate.repair || null,
-        }
-      : null;
-const gateRepairIds = new Set(gateSpec?.repair?.stages || []);
+const completionSpec = chain.completion || null;
+const completionRepairIds = new Set(completionSpec?.repair?.stages || []);
+const foreachRepairIds = new Set(chain.foreach?.completion?.repair?.stages || []);
+const repairIds = new Set([...completionRepairIds, ...foreachRepairIds]);
 const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
 const runId = `${chain.name}__${tag}__${stamp}`;
 // WHERE A RUN IS RECORDED. Beside the CHAIN, not beside the engine.
@@ -177,7 +172,7 @@ if (!existsSync(workDir)) die(`--workdir does not exist: ${workDir}`);
 
 function sh(cmd, cwd) {
   // `-o pipefail` is load-bearing: without it a pipeline's exit code is the LAST
-  // command's, so a gate like `test | grep -q ok` returns 0 when the test itself
+  // command's, so a check like `test | grep -q ok` returns 0 when the test itself
   // crashed and grep matched earlier output -- a green verdict for a suite that
   // never ran, which is the worst thing a harness can produce because it is silent.
   const r = spawnSync("bash", ["-o", "pipefail", "-c", cmd], {
@@ -188,10 +183,10 @@ function sh(cmd, cwd) {
   return { code: r.status ?? -1, out: `${r.stdout || ""}\n${r.stderr || ""}`.trim() };
 }
 
-// PREFLIGHT -- not optional, and deliberately in code rather than in a prompt.
+// BUILT-IN PREFLIGHT -- not optional, and deliberately in code rather than in a prompt.
 // Delivery is proven by `git diff <base>..HEAD` being non-empty. With no git repo
 // there is no base, the diff check silently drops out, and `delivered` degenerates
-// to "the gate exited 0" -- which proves nothing, because a gate can pass
+// to "completion exited 0" -- which proves nothing, because a judge can pass
 // vacuously (`node --test` on an empty directory exits 0). That failure is silent
 // and produces a confident false green, so it is refused up front, not warned about.
 const headProbe = sh("git rev-parse HEAD", workDir);
@@ -203,17 +198,38 @@ if (headProbe.code !== 0 || !/^[0-9a-f]{40}$/.test(baseSha)) {
       `    workdir ${workDir}\n` +
       `    ${isRepo ? "It is a git repo but HEAD resolves to no commit (no commits yet)." : "It is not a git repo."}\n\n` +
       `  A run cannot be judged without a base commit: delivery is "the diff since base\n` +
-      `  is non-empty", and a gate alone can pass vacuously. Initialise the workdir first:\n\n` +
+      `  is non-empty", and completion alone can pass vacuously. Initialise the workdir first:\n\n` +
       `    git -C ${workDir} init -q && git -C ${workDir} commit -q --allow-empty -m base\n`,
   );
   process.exit(2);
 }
-if (chain.preflight) {
-  const command = render(chain.preflight.run, ctx);
+const initialStatus = sh("git status --porcelain=v1 --untracked-files=all", workDir).out.trim();
+if (initialStatus) {
+  console.error(
+    `\n✗ PREFLIGHT: workdir must be clean before a run starts.\n` +
+      initialStatus.replace(/^/gm, "    "),
+  );
+  process.exit(2);
+}
+if (chain.requires) {
+  const command = render(chain.requires.run, ctx);
+  const before = repositorySnapshot(workDir);
+  const treeBefore = treeSnapshot(workDir);
   const p = sh(command, workDir);
+  const after = repositorySnapshot(workDir);
+  const filesChanged = treeDelta(treeBefore, treeSnapshot(workDir));
+  if (filesChanged.length || before.head !== after.head || before.status !== after.status) {
+    console.error(
+      `\n✗ REQUIRES: command mutated the repository instead of checking it: ${command}\n` +
+        (filesChanged.length
+          ? `    changed: ${filesChanged.join(", ")}`
+          : "    repository HEAD or index changed"),
+    );
+    process.exit(2);
+  }
   if (p.code !== 0) {
     console.error(
-      `\n✗ PREFLIGHT: ${command}\n` + (p.out ? p.out.replace(/^/gm, "    ") : "    (no output)"),
+      `\n✗ REQUIRES: ${command}\n` + (p.out ? p.out.replace(/^/gm, "    ") : "    (no output)"),
     );
     process.exit(2);
   }
@@ -240,8 +256,8 @@ writeFileSync(
       name: chain.name,
       tag,
       startedAt: new Date().toISOString(),
-      gate: gateSpec || null,
-      preflight: chain.preflight || null,
+      completion: completionSpec,
+      requires: chain.requires || null,
       loop: chain.loop || null,
       foreach: chain.foreach || null,
       workDir,
@@ -267,7 +283,8 @@ writeFileSync(
         // Declared up front so the canvas can show "runs once per element" before
         // the element count is known -- N only exists once the producing stage ends.
         inForeach: (chain.foreach?.stages || []).includes(s.id),
-        inGateRepair: gateRepairIds.has(s.id),
+        inCompletionRepair: completionRepairIds.has(s.id),
+        inForeachCompletionRepair: foreachRepairIds.has(s.id),
       })),
     },
     null,
@@ -364,6 +381,7 @@ async function executeOnce(stage, round = 0, iter = 0, attempt = 0, deterministi
     resume: stage.resume,
     expects: stage.expects,
     completion: null,
+    completionStatus: stage.completion ? "pending" : "absent",
     filesChanged,
     repositoryChanged,
     sessionId: res.sessionId || null,
@@ -417,7 +435,7 @@ async function executeOnce(stage, round = 0, iter = 0, attempt = 0, deterministi
   // the record said so -- the stage was `ok`, so it read as a stage that worked.
   //
   // A warning, not a halt: a stage may legitimately have nothing to look up, and a
-  // gate that stops the run over an unused affordance would be worse than the gap.
+  // rule that stops the run over an unused affordance would be worse than the gap.
   // The record carries the fact; the operator decides what it means.
   const note = unusedToolsWarning(stage, res.telemetry?.toolCallCount ?? null, round);
   if (note) {
@@ -446,7 +464,7 @@ async function executeOnce(stage, round = 0, iter = 0, attempt = 0, deterministi
   // scoped to the ARTIFACT, never to the CHECK: it may rewrite the plan, and it may
   // not say "the plan is fine, the checker is wrong". So when a check produces a
   // finding that is false, the repair stage has no legal move. Measured, twice, in
-  // one run: a plan gate raised six impossible problems, the fixer was forbidden
+  // one run: a plan check raised six impossible problems, the fixer was forbidden
   // from deleting the checks (anti-widening) and from claiming the files
   // (ownership), so it burned the loop to exhaustion changing nothing, and the run
   // ended reading like the plan was bad. It was not.
@@ -456,7 +474,7 @@ async function executeOnce(stage, round = 0, iter = 0, attempt = 0, deterministi
   // stage in every chain, and the kernel never learns which one used it.
   //
   // WHAT IT DELIBERATELY DOES NOT DO: it does not let the run continue. An appeal
-  // that grants permission to proceed is a model overruling its own gate, which is
+  // that grants permission to proceed is a model overruling its own check, which is
   // the manufactured green this project has already watched happen once. So it
   // halts -- but as its own recorded outcome, with the argument attached, costing
   // one round instead of the whole budget, and pointing the operator at the checker
@@ -493,109 +511,44 @@ async function executeOnce(stage, round = 0, iter = 0, attempt = 0, deterministi
 async function execute(stage, round = 0, iter = 0, deterministicFailure = null) {
   if (!stage.completion) return executeOnce(stage, round, iter, 0, deterministicFailure);
 
-  let previousFailure = deterministicFailure;
-  for (let attempt = 0; attempt < stage.completion.max; attempt++) {
-    const ok = await executeOnce(stage, round, iter, attempt, previousFailure);
-    if (!ok) return false;
-
-    const row = stageLog.at(-1);
-    const checkTreeBefore = snap();
-    const checkRepoBefore = repositorySnapshot(workDir);
-    const check = await runCommandStage({
-      stage: {
-        ...stage,
-        run: stage.completion.run,
-        parse: "text",
-        expects: null,
-        produces: null,
-      },
-      ctx,
-      workDir,
-      logRoot,
-      round,
-      iter,
-      attempt,
-    });
-    const checkFilesChanged = treeDelta(checkTreeBefore, snap());
-    const checkRepoAfter = repositorySnapshot(workDir);
-    const failureText = check.raw || check.error || "";
-    const outputText = check.ok ? String(check.value || "") : failureText;
-    const result = {
-      attempt: attempt + 1,
-      max: stage.completion.max,
-      command: check.command || stage.completion.run,
-      code: check.code ?? (check.ok ? 0 : null),
-      ok: check.ok,
-      tail: outputText.slice(-2000),
-      output: check.output || outputText.slice(-12000),
-      rawPath: check.rawPath || null,
-      wallMs: check.wallMs ?? null,
-      filesChanged: checkFilesChanged,
-    };
-    row.completion = result;
-
-    if (
-      checkFilesChanged.length ||
-      checkRepoBefore.head !== checkRepoAfter.head ||
-      checkRepoBefore.status !== checkRepoAfter.status
-    ) {
-      halted = {
-        stage: `${stage.id}.completion`,
+  const result = await runCompletion({
+    spec: stage.completion,
+    scope: `stage "${stage.id}"`,
+    ctx,
+    workDir,
+    logRoot,
+    round,
+    iter,
+    ord: stage.ord,
+    timeoutMs: stage.timeoutMs,
+    failureContext: "Your previous turn did not satisfy this stage's completion requirement.",
+    beforeAttempt: async ({ attempt, previous, command }) => {
+      const ok = await executeOnce(
+        stage,
         round,
         iter,
-        kind: "completion-mutated",
-        reason: checkFilesChanged.length
-          ? `stage "${stage.id}" completion command changed ${checkFilesChanged.length} file(s): ` +
-            checkFilesChanged.slice(0, 10).join(", ")
-          : `stage "${stage.id}" completion command changed the repository index or HEAD`,
-        completion: result,
+        attempt - 1,
+        previous
+          ? { ...previous, command, attempt, attempts: stage.completion.attempts }
+          : deterministicFailure,
+      );
+      return {
+        ok,
+        changed: ok ? stageLog.at(-1).repositoryChanged : false,
       };
-      console.log(`   ✗ ${stage.id} completion MUTATED the tree instead of judging it`);
-      return false;
-    }
-
-    if (check.ok) {
-      console.log(`   ✓ ${stage.id} completion clean`);
-      return true;
-    }
-
-    console.log(
-      `   ✗ ${stage.id} completion FAILED (attempt ${attempt + 1}/${stage.completion.max})`,
-    );
-    const signature = `${result.command}\n${result.tail}`;
-    if (previousFailure && previousFailure.signature === signature && !row.repositoryChanged) {
-      halted = {
-        stage: `${stage.id}.completion`,
-        round,
-        iter,
-        kind: "no-progress",
-        reason: `stage "${stage.id}" repeated the same completion failure without changing any files`,
-        completion: result,
-      };
-      return false;
-    }
-    if (attempt + 1 >= stage.completion.max) {
-      halted = {
-        stage: `${stage.id}.completion`,
-        round,
-        iter,
-        kind: "exhausted",
-        reason:
-          `stage "${stage.id}" did not satisfy its completion command after ` +
-          `${stage.completion.max} attempt(s): ${result.command}`,
-        completion: result,
-      };
-      return false;
-    }
-    previousFailure = {
-      ...result,
-      signature,
-      attempt: attempt + 2,
-      max: stage.completion.max,
-      context: "Your previous turn did not satisfy this stage's completion requirement.",
-    };
-  }
-  return false;
+    },
+    onCheck: (check) => {
+      stageLog.at(-1).completion = check;
+      stageLog.at(-1).completionStatus = check.ok ? "passed" : "failed";
+      console.log(
+        check.ok
+          ? `   ✓ ${stage.id} completion clean`
+          : `   ✗ ${stage.id} completion FAILED (attempt ${check.attempt}/${check.attempts})`,
+      );
+    },
+  });
+  if (!result.ok && !result.aborted) halted = result.halt;
+  return result.ok;
 }
 
 const loopIds = new Set(chain.loop?.stages || []);
@@ -609,13 +562,13 @@ const feIds = new Set(fe?.stages || []);
 // before the loop no matter where it was written. A stage declared last ran second,
 // silently -- and "run something after the fan-out" (normalise the tree, collect a
 // report, commit the result) was not expressible at all, which is what pushed that
-// work into the gate, where a judge quietly becomes a mutator of what it judges.
+// work into completion, where a judge quietly becomes a mutator of what it judges.
 //
 // Existing chains are unaffected: they declare their linear stages first, which is
 // still `pre`.
 const slots = linearSlots(stages, loopIds, feIds);
 for (const name of ["pre", "mid", "post"])
-  slots[name] = slots[name].filter((stage) => !gateRepairIds.has(stage.id));
+  slots[name] = slots[name].filter((stage) => !repairIds.has(stage.id));
 
 for (const stage of slots.pre) {
   if (halted) break;
@@ -705,7 +658,7 @@ const loopSatisfied = chain.loop ? readPath(ctx, chain.loop.until) === true : nu
 if (!halted) halted = exhaustedHalt(chain.loop, loopSatisfied) || halted;
 
 // THE FAN-OUT. The chain's second control-flow construct: run a stage list once per
-// element of an artifact array, with its own bounded inner loop and its own gate per
+// element of an artifact array, with its own bounded inner loop and completion per
 // element.
 //
 // The kernel does not know what the elements are. `over` names an array, `as` binds
@@ -779,26 +732,38 @@ if (fe && !halted) {
       }
     }
 
-    // THE PER-ELEMENT GATE. Without it the inner loop is graded only by a model's
-    // opinion of its own work, and "did this element actually build" is a question
-    // the run cannot answer until the very end, about all elements at once.
-    let iterGate = null;
-    if (fe.gate && !halted) {
-      const cmd = render(fe.gate, ctx);
-      const g = sh(cmd, workDir);
-      iterGate = { command: cmd, code: g.code, ok: g.code === 0, tail: g.out.slice(-1500) };
-      console.log(g.code === 0 ? `   ✓ gate clean` : `   ✗ gate FAILED (exit ${g.code})`);
-      if (g.code !== 0) {
-        // A failing element HALTS. Carrying on would let the chain gate render a
-        // verdict over a half-built tree -- a green that means nothing, or a red
-        // charged to whichever element happened to run last.
-        halted = {
-          stage: "foreach.gate",
-          iter,
-          kind: "gate",
-          reason: `element ${iter} (${label}) failed its gate: ${cmd}`,
-        };
-      }
+    let iterCompletion = null;
+    if (fe.completion && !halted) {
+      iterCompletion = await runCompletion({
+        spec: fe.completion,
+        scope: `foreach item ${iter} (${label})`,
+        ctx,
+        workDir,
+        logRoot,
+        iter,
+        failureContext: "This foreach item failed its deterministic completion command.",
+        beforeAttempt: async ({ attempt, previous }) => {
+          if (attempt === 1) return { ok: true, changed: false };
+          const mark = stageLog.length;
+          console.log(
+            `\n--- ${label}: completion repair ${attempt - 1}/${fe.completion.attempts - 1} ---`,
+          );
+          for (const id of fe.completion.repair.stages) {
+            if (!(await execute(byId.get(id), attempt - 1, iter, previous))) break;
+          }
+          return {
+            ok: !halted,
+            changed: stageLog.slice(mark).some((row) => row.repositoryChanged),
+          };
+        },
+        onCheck: (check) =>
+          console.log(
+            check.ok
+              ? "   ✓ item completion clean"
+              : `   ✗ item completion FAILED (attempt ${check.attempt}/${check.attempts})`,
+          ),
+      });
+      if (!iterCompletion.ok && !iterCompletion.aborted) halted = iterCompletion.halt;
     }
 
     // A COMMIT PER GREEN ELEMENT. Makes the per-element file attribution exact
@@ -809,7 +774,7 @@ if (fe && !halted) {
       const c = sh(`git commit -q -m "chainkit: ${String(label).replace(/"/g, "'")}"`, workDir);
       // "Nothing to commit" is not an error -- a stage may legitimately have written
       // nothing -- but it IS recorded, because an element that changed no files and
-      // still passed its gate is a vacuous pass.
+      // still passed completion is a vacuous pass.
       commit = { ok: c.code === 0, sha: sh(`git rev-parse HEAD`, workDir).out.trim() };
     }
 
@@ -818,125 +783,90 @@ if (fe && !halted) {
       label,
       item,
       rounds: iterRounds,
-      gate: iterGate,
+      completion: iterCompletion,
+      completionStatus: iterCompletion?.status || "absent",
       commit,
       satisfied: fe.loop ? readPath(ctx, fe.loop.until) === true : null,
     });
   }
 }
 
-// THE DECLARED GATE. The chain's own definition of done, run once at the end over
-// the assembled result. Blame is diff-scoped: a whole-repo gate also catches drift
-// this run never touched, and charging that to the run makes every number wrong.
+// CHAIN COMPLETION. Its command judges the assembled result and shares the same
+// bounded state machine as stage and foreach completion.
 //
 // Linear stages declared AFTER the fan-out run first -- they are the last chance to
-// put the tree in the state the gate will judge, which is why they exist: so the
-// gate never has to mutate anything itself.
+// put the tree in the state completion will judge, which is why they exist: the
+// judge never has to mutate anything itself.
 for (const stage of slots.post) {
   if (halted) break;
   await execute(stage);
 }
-let gate = null;
-function runFinalGate(attempt = 0) {
-  const command = gateSpec.run;
-  console.log(`\n=== GATE${attempt ? ` RETRY ${attempt}` : ""} (${command}) ===`);
-  const g = sh(command, workDir);
-  const touched =
-    g.code === 0
-      ? []
-      : sh(`git diff --name-only ${baseSha}`, workDir)
+let completion = null;
+if (completionSpec && !halted) {
+  console.log(`\n=== CHAIN COMPLETION (${completionSpec.run}) ===`);
+  completion = await runCompletion({
+    spec: completionSpec,
+    scope: "chain",
+    ctx,
+    workDir,
+    logRoot,
+    failureContext: "The assembled repository failed its chain completion command.",
+    beforeAttempt: async ({ attempt, previous }) => {
+      if (attempt === 1) return { ok: true, changed: false };
+      const mark = stageLog.length;
+      console.log(
+        `\n--- chain completion repair ${attempt - 1}/${completionSpec.attempts - 1} ---`,
+      );
+      for (const id of completionSpec.repair.stages) {
+        if (!(await execute(byId.get(id), attempt - 1, 0, previous))) break;
+      }
+      return {
+        ok: !halted,
+        changed: stageLog.slice(mark).some((row) => row.repositoryChanged),
+      };
+    },
+    onCheck: (check) => {
+      if (!check.ok) {
+        const touched = sh(`git diff --name-only ${baseSha}`, workDir)
           .out.split("\n")
           .map((x) => x.trim())
           .filter(Boolean);
-  const blamed = touched.filter((f) => g.out.includes(f));
-  const measured = {
-    command,
-    code: g.code,
-    ok: g.code === 0,
-    filesInDiff: blamed,
-    inherited: g.code !== 0 && blamed.length === 0,
-    tail: g.out.slice(-1500),
-  };
-  console.log(
-    g.code === 0
-      ? "   ✓ gate clean"
-      : blamed.length
-        ? `   ✗ gate FAILED in files this run wrote: ${blamed.join(", ")}`
-        : "   ⚠ gate failed in NO file this run touched — inherited drift, not this run's",
-  );
-  return measured;
-}
-
-if (gateSpec && !halted) {
-  gate = runFinalGate();
-
-  let previous = `${gate.code}\n${gate.tail}`;
-  for (
-    let attempt = 1;
-    !gate.ok && !halted && gateSpec.repair && attempt <= gateSpec.repair.max;
-    attempt++
-  ) {
-    const mark = stageLog.length;
-    console.log(`\n--- gate repair ${attempt}/${gateSpec.repair.max} ---`);
-    const gateFailure = {
-      ...gate,
-      attempt,
-      max: gateSpec.repair.max,
-      context: "The assembled repository failed its final deterministic gate.",
-    };
-    for (const id of gateSpec.repair.stages) {
-      if (!(await execute(byId.get(id), attempt, 0, gateFailure))) break;
-    }
-    if (halted) break;
-
-    const repositoryChanged = stageLog.slice(mark).some((row) => row.repositoryChanged);
-    gate = runFinalGate(attempt);
-    if (gate.ok) {
+        check.filesInDiff = touched.filter((file) => check.output.includes(file));
+        check.inherited = check.filesInDiff.length === 0;
+      }
+      console.log(
+        check.ok
+          ? "   ✓ chain completion clean"
+          : check.filesInDiff?.length
+            ? `   ✗ chain completion FAILED in files this run wrote: ${check.filesInDiff.join(", ")}`
+            : "   ⚠ chain completion failed in NO file this run touched — inherited drift",
+      );
+    },
+    afterPass: async ({ attempt }) => {
       const pending = sh("git status --porcelain=v1 --untracked-files=all", workDir).out.trim();
-      if (pending) {
-        sh("git add -A", workDir);
-        const c = sh(`git commit -q -m "chainkit: final gate repair ${attempt}"`, workDir);
-        if (c.code !== 0) {
-          halted = {
-            stage: "gate.repair",
+      if (!pending) return null;
+      sh("git add -A", workDir);
+      const c = sh(`git commit -q -m "chainkit: chain completion repair ${attempt - 1}"`, workDir);
+      if (c.code !== 0)
+        return {
+          halt: {
+            stage: "chain.completion",
             round: attempt,
             kind: "commit",
-            reason: `final gate passed, but its repair could not be committed: ${c.out.trim() || `git commit exited ${c.code}`}`,
-            gate,
-          };
-          break;
-        }
-        gate.repairCommit = {
+            reason:
+              `chain completion passed, but its repair could not be committed: ` +
+              (c.out.trim() || `git commit exited ${c.code}`),
+          },
+        };
+      return {
+        repairCommit: {
           attempt,
           sha: sh("git rev-parse HEAD", workDir).out.trim(),
-        };
-      }
-      break;
-    }
-
-    const current = `${gate.code}\n${gate.tail}`;
-    if (current === previous && !repositoryChanged) {
-      halted = {
-        stage: "gate.repair",
-        round: attempt,
-        kind: "no-progress",
-        reason: "final gate repeated the same failure and its repair stages changed no files",
-        gate,
+        },
       };
-      break;
-    }
-    previous = current;
-  }
-  if (!gate.ok && gateSpec.repair && !halted) {
-    halted = {
-      stage: "gate.repair",
-      round: gateSpec.repair.max,
-      kind: "exhausted",
-      reason:
-        `final gate remained red after ${gateSpec.repair.max} repair attempt(s): ` + gate.command,
-      gate,
-    };
-  }
+    },
+  });
+  if (!completion.ok && !completion.aborted) halted = completion.halt;
 }
 
 const aiu = reduceCumulative(telemRows, "aiu");
@@ -947,10 +877,10 @@ const apiMs = reduceCumulative(telemRows, "totalApiDurationMs");
 // started in? Both halves were learned from run ck1, which reported "delivered
 // YES" while neither question had been asked:
 //
-//   1. A clean gate proves nothing on its own when the BASE was already green --
+//   1. Clean completion proves nothing on its own when the BASE was already green --
 //      which is the normal case, since a chain starts from a working tree. A run
-//      that wrote no code at all satisfies `gate.ok` exactly as well as one that
-//      built the feature. Delivery has to mean gate-clean AND a non-empty diff.
+//      that wrote no code at all satisfies completion exactly as well as one that
+//      built the feature. Delivery has to mean completion-clean AND a non-empty diff.
 //   2. ck1's model ran `git init` in the workdir, replacing the worktree's .git
 //      file with a fresh empty repo. baseSha was recorded at start and never
 //      looked at again, so the run reported success while the commit it was
@@ -986,25 +916,28 @@ if (baseSha) {
   };
   if (!baseAlive)
     console.log(
-      `\n⚠ BASE COMMIT ${baseSha.slice(0, 8)} IS UNREACHABLE — the workdir's git identity was destroyed during the run (e.g. \`git init\`). No diff can be taken, so this run is NOT delivered regardless of the gate.`,
+      `\n⚠ BASE COMMIT ${baseSha.slice(0, 8)} IS UNREACHABLE — the workdir's git identity was destroyed during the run (e.g. \`git init\`). No diff can be taken, so this run is NOT delivered regardless of completion.`,
     );
   else if (!diffStat.changed)
     console.log(
-      `\n⚠ NO CHANGE — the run wrote nothing. A clean gate here only means the base was already green.`,
+      `\n⚠ NO CHANGE — the run wrote nothing. Clean completion here only means the base was already green.`,
     );
 }
 
-// DELIVERED is a single explicit boolean, not something a reader infers from
-// "4/4 stages ok". A run whose stages all succeeded but whose gate is red has not
-// delivered, and a record that leaves that to interpretation gets misread.
+const completionStatus = !completionSpec ? "absent" : completion?.status || "not-run";
+const completed = !halted && (!completionSpec || completionStatus === "passed");
+const verified = completionStatus === "passed";
+
+// Delivery is deliberately narrower than successful execution. Only a declared,
+// passing chain completion can verify a non-empty, identity-valid diff.
 const delivered =
-  !halted &&
-  (gate ? gate.ok : true) &&
+  completed &&
+  verified &&
   (chain.loop ? loopSatisfied === true : true) &&
-  // Every element must have RUN and passed its own gate. `feExpected` is the count
+  // Every element must have RUN and passed its own completion. `feExpected` is the count
   // the plan produced: without comparing against it, a fan-out that halted at
   // element 2 of 5 satisfies "every element that ran was green" and reports
-  // delivered on a chain gate that has no idea how many there should have been.
+  // delivered on chain completion that has no idea how many there should have been.
   (fe ? foreachDelivered(iterations, feExpected) : true) &&
   diffStat.baseAlive &&
   diffStat.changed > 0;
@@ -1020,10 +953,13 @@ const record = {
   startedAt: stamp,
   finishedAt: new Date().toISOString(),
   node: process.version,
+  completed,
+  verified,
+  completionStatus,
   delivered,
   halted,
   warnings,
-  gate,
+  completion,
   loop: chain.loop ? { ...chain.loop, rounds, satisfied: loopSatisfied } : null,
   foreach: fe ? { ...fe, expected: feExpected, count: iterations.length, iterations } : null,
   // The RESOLVED stages, not the config as authored: recording the config would
@@ -1056,6 +992,10 @@ const recPath = path.join(resultsRoot, "chain-runs", `${runId}.json`);
 writeFileSync(recPath, JSON.stringify(record, null, 2));
 
 console.log(`\n=== SUMMARY ===`);
+console.log(`  completed   ${completed ? "YES" : "NO"}`);
+console.log(
+  `  verified    ${verified ? "YES" : completionStatus === "absent" ? "NOT DECLARED" : "NO"}`,
+);
 console.log(`  delivered   ${delivered ? "YES" : "NO"}`);
 if (diffStat)
   console.log(
@@ -1065,16 +1005,16 @@ if (halted) console.log(`  halted      ${halted.stage}: ${halted.reason}`);
 if (chain.loop)
   console.log(`  loop        ${rounds}/${chain.loop.max} round(s), satisfied=${loopSatisfied}`);
 if (fe) {
-  const green = iterations.filter((it) => !it.gate || it.gate.ok).length;
+  const green = iterations.filter((it) => !it.completion || it.completion.ok).length;
   console.log(
-    `  ${fe.as.padEnd(11)} ${green}/${feExpected ?? "?"} passed their gate` +
+    `  ${fe.as.padEnd(11)} ${green}/${feExpected ?? "?"} completed` +
       (feExpected != null && iterations.length !== feExpected
         ? ` (only ${iterations.length} ran)`
         : ""),
   );
   for (const it of iterations)
     console.log(
-      `    ${String(it.iter).padStart(2)}. ${it.label} — ${it.rounds} round(s), gate ${it.gate ? (it.gate.ok ? "ok" : "FAILED") : "none"}`,
+      `    ${String(it.iter).padStart(2)}. ${it.label} — ${it.rounds} round(s), completion ${it.completion ? (it.completion.ok ? "ok" : "FAILED") : "not declared"}`,
     );
 }
 console.log(`  calls       ${stageLog.length}`);
@@ -1082,7 +1022,7 @@ console.log(
   `  AiU         ${aiu.value.toFixed(4)}${aiu.unmetered ? ` (${aiu.unmetered} unmetered)` : ""}`,
 );
 console.log(`  record      ${recPath}`);
-process.exit(delivered ? 0 : 1);
+process.exit(completed ? 0 : 1);
 
 function die(msg) {
   console.error(`✗ ${msg}`);

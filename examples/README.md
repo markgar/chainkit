@@ -36,10 +36,10 @@ node run.mjs --chain examples/01-single-stage/chain.yaml --validate-only
 
 ## Reading the results
 
-A run writes one JSON record per run plus per-stage raw JSONL, under `results/chain-runs/` beside the chain. Open it with the `chainkit-runs` canvas, or read the record directly: it carries the resolved roster, real AiU cost per stage, loop and fan-out rounds, the gate result, and the engine's own `delivered` / `halted` verdict.
+A run writes one JSON record per run plus per-stage raw JSONL, under `results/chain-runs/` beside the chain. Open it with the `chainkit-runs` canvas, or read the record directly: it carries the resolved roster, real AiU cost per stage, loop and fan-out rounds, completion results, and the engine's own `completed` / `verified` / `delivered` verdicts.
 
 ## Using one as a starting point
 
-Copy the closest rung into your own repo, then change the seeds, the prompts, and the gate. The one thing to keep is the gate's shape — see rung 01 on why a grader is verified unchanged before it is trusted.
+Copy the closest rung into your own repo, then change the seeds, prompts, and completion commands. See rung 01 on why a grader is verified unchanged before it is trusted.
 
 Chains you actually run belong in **your** repo, not here. These are worked examples, and an upgrade of the engine replaces this directory wholesale.

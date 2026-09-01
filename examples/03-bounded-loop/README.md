@@ -49,7 +49,7 @@ loop:
 
 A reviewer that never passes is the failure mode that spends without limit, and it looks like progress the whole time. The bound stops it.
 
-Hitting the bound is recorded in the run record as an **unsatisfied** loop, so a run that thrashed to its limit is distinguishable from one that converged on round two. Read that field before concluding a chain works — the gate can pass on the last round of a loop that was never really converging.
+Hitting the bound is recorded as an **unsatisfied** loop, so a run that thrashed to its limit is distinguishable from one that converged on round two. Chain completion may still measure the final tree, but an unsatisfied loop blocks delivery.
 
 ## `resume: true`
 

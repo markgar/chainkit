@@ -2,7 +2,7 @@
 #
 # The last rung, and the one that adds the most: a design phase in its own outer
 # loop, and a `foreach` that runs the build/review/fix triple ONCE PER CHUNK with
-# its own bounded loop and its own gate.
+# its own bounded loop and its own completion.
 #
 # The job changes here, from the single-module `todos` package to the
 # four-module `todo-cli` package. That is deliberate rather than incidental: there is
@@ -16,9 +16,9 @@
 #
 # Two decisions worth naming, because they are what make a run measurable:
 #
-#   THE GATE IS PER CHUNK. `{{chunk.acceptance}}` is that chunk's own grader
+#   COMPLETION IS PER CHUNK. `{{chunk.acceptance}}` is that chunk's own grader
 #   command, so every element gets an objective pass/fail at the moment it is
-#   built, and a failure is attributed to the chunk that caused it. A single gate
+#   built, and a failure is attributed to the chunk that caused it. A single check
 #   at the end can only say "the package is red" -- about all chunks at once,
 #   after paying for all of them.
 #
@@ -124,10 +124,14 @@ foreach:
     stages: [review, fix]
     until: verdict.pass
     max: 3
-  gate: "{{chunk.acceptance}}"
+  completion:
+    run: "{{chunk.acceptance}}"
+    attempts: 1
   max: 8 # refuse an oversized plan rather than silently truncating it
 
-# The chain gate runs the WHOLE grader. Every chunk already passed its own suite,
+# Chain completion runs the WHOLE grader. Every chunk already passed its own suite,
 # so this exists to catch what per-chunk grading structurally cannot: modules that
 # are each correct and wired together wrong.
-gate: bash -o pipefail -c "git diff --quiet HEAD -- acceptance && node --test acceptance/*.test.js"
+completion:
+  run: bash -o pipefail -c "git diff --quiet HEAD -- acceptance && node --test acceptance/*.test.js"
+  attempts: 1

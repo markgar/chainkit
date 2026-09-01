@@ -4,7 +4,7 @@
 (plan → plan-review)*                      until planVerdict.pass, at most 2 times
   then, once per chunk:
     code → (review → fix)*                 until verdict.pass, at most 3 times
-    gate: that chunk's own grader command
+    completion: that chunk's own grader command
 ```
 
 The last rung. One construct added to [rung 03](../03-bounded-loop/): `foreach` — run a list of stages once per element of an array another stage produced.
@@ -19,7 +19,7 @@ That is deliberate, not incidental: **there is nothing to fan out over in a one-
 
 | file | what it is |
 | --- | --- |
-| [`chain.yaml`](chain.yaml) | outer loop, five stages, `foreach`, two gates |
+| [`chain.yaml`](chain.yaml) | outer loop, five stages, `foreach`, item + chain completion |
 | [`prompts/plan.md`](prompts/plan.md) | partitions the spec into chunks, as JSON |
 | [`prompts/plan-review.md`](prompts/plan-review.md) | critiques the plan; blocking vs advisory |
 | [`prompts/code.md`](prompts/code.md) | builds ONE chunk, reading `{{chunk.*}}` |
@@ -47,7 +47,7 @@ foreach:
   as: chunk
   stages: [code, review, fix]
   loop: { stages: [review, fix], until: verdict.pass, max: 3 }
-  gate: "{{chunk.acceptance}}"
+  completion: { run: "{{chunk.acceptance}}", attempts: 1 }
   max: 8
 ```
 
@@ -55,7 +55,7 @@ foreach:
 
 ## The three things worth copying from here
 
-**The gate is per chunk.** `{{chunk.acceptance}}` is the grader command for that chunk alone, so each element gets an objective pass/fail at the moment it is built, and a failure is attributed to the chunk that caused it. A single gate at the end can only tell you the package is red — about all chunks at once, after you have paid for all of them.
+**Completion is per chunk.** `{{chunk.acceptance}}` is the grader command for that chunk alone, so each element gets an objective pass/fail at the moment it is built. Chain completion then catches cross-chunk integration failures.
 
 **The element has a contract too.**
 
@@ -67,7 +67,7 @@ expects:
   blueprint: string
 ```
 
-`expects` on a stage checks one artifact; this checks the shape of **every element** before any of them is built, so a planner that renamed a field fails free instead of eight times over. `acceptance` matters most: it is rendered into the gate, and an absent value would produce an **empty shell command — which succeeds.** Every chunk would be graded green by a gate that ran nothing.
+`expects` on a stage checks one artifact; this checks the shape of **every element** before any of them is built, so a planner that renamed a field fails free instead of eight times over. `acceptance` matters most: it is rendered into completion, and an absent value would produce an empty shell command.
 
 **The plan review has teeth.** `plan` and `plan-review` sit in the outer loop with `until: planVerdict.pass`, so a blocking critique forces a re-plan instead of being advice nobody reads. A bad plan is the most expensive artifact in the chain: it gets transcribed faithfully, chunk by chunk, at full price. Reviewing it is the cheapest money in the run.
 
@@ -81,4 +81,4 @@ Which means the failure mode moves. A vague blueprint does not produce a visibly
 
 ## What the last suite is for
 
-Three of the four suites grade one module each, with only that module on disk — so a chunk's gate cannot pass on a neighbour's work, and a failure names the chunk that caused it. The fourth, `cli.test.js`, is the only one given all four files, and it exists for the defect per-chunk grading structurally cannot see: four modules that are each correct and wired together wrong. The trap it pins is that `list --filter done` must filter the view while the footer keeps counting the whole list. Every module can be right and that can still be wrong.
+Three suites grade one module each, with only that module on disk. The fourth, `cli.test.js`, sees all four files and catches what per-item completion structurally cannot: modules that are individually correct and wired together wrong.

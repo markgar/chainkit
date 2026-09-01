@@ -157,7 +157,10 @@ export function labelOf(item, iter) {
 export function foreachDelivered(iterations, expected) {
   if (!Array.isArray(iterations) || iterations.length === 0) return false;
   if (expected != null && iterations.length !== expected) return false;
-  return iterations.every((it) => (it.gate ? it.gate.ok === true : true));
+  return iterations.every((it) => {
+    const completion = it.completion || it.gate; // Legacy records retain `.gate`.
+    return completion ? completion.ok === true : true;
+  });
 }
 
 // Did the CHAIN loop exhaust its budget without reaching its condition, and if so is
@@ -386,7 +389,7 @@ export function selfTest() {
   CASES.push(["a null element does not throw", labelOf(null, 2) === "element 2"]);
 
   // ---- delivered -------------------------------------------------------------
-  const g = (ok) => ({ gate: { ok } });
+  const g = (ok) => ({ completion: { ok } });
   CASES.push(["all green delivers", foreachDelivered([g(true), g(true)], 2) === true]);
   CASES.push(["one red does not deliver", foreachDelivered([g(true), g(false)], 2) === false]);
   // The partial-build trap: every iteration that RAN was green, but two of five
@@ -397,8 +400,12 @@ export function selfTest() {
   ]);
   CASES.push(["no iterations does not deliver", foreachDelivered([], 0) === false]);
   CASES.push([
-    "elements with no gate deliver on having run",
-    foreachDelivered([{ gate: null }, { gate: null }], 2) === true,
+    "elements with no completion deliver on having run",
+    foreachDelivered([{ completion: null }, { completion: null }], 2) === true,
+  ]);
+  CASES.push([
+    "legacy gate records remain readable",
+    foreachDelivered([{ gate: { ok: true } }], 1) === true,
   ]);
 
   // THE EXHAUSTED-LOOP HALT. The regression these lock down is a run that spent a
