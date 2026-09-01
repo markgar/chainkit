@@ -155,7 +155,13 @@ export function resolveChainFile(roots, want) {
 export async function readDesign(root, file) {
   if (!file || !existsSync(file)) return { file, exists: false };
 
-  const { loadChain, resolveStages } = await kernel(root);
+  // Accept either an already-resolved engine root or the workspace/base a caller
+  // naturally has. The extension itself lives under `.github/extensions` when
+  // vendored, so treating `<host>/.github` as an engine root imports the nonexistent
+  // `<host>/.github/kernel/config.mjs`. Resolution belongs at this API boundary:
+  // every caller, including copied extensions and tests, gets the same layout logic.
+  const resolvedEngine = engineRoot(root, { base: root || repoRoot });
+  const { loadChain, resolveStages } = await kernel(resolvedEngine);
   let chain, promptRoot, errors;
   try {
     ({ chain, promptRoot, errors } = loadChain(file));
