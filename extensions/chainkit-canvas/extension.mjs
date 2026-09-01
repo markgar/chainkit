@@ -203,6 +203,7 @@ const session = await joinSession({
                 tools: st.tools,
                 aiu: Number(st.aiu.toFixed(4)),
                 unmetered: st.unmetered,
+                resumedFrom: st.resumedFrom || null,
                 rounds: st.rounds.map((r) => ({
                   label: r.label,
                   round: r.round,
@@ -213,6 +214,7 @@ const session = await joinSession({
                   // summary with it.
                   aiu: r.aiu == null ? null : Number(r.aiu.toFixed(4)),
                   inFlight: r.inFlight,
+                  resumedFrom: r.resumedFrom || null,
                 })),
               })),
             };

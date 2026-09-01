@@ -501,6 +501,7 @@ function callFiles(stageDir) {
     // correctly -- see `applyMarginalAiu`. It is written when the call STARTS, so
     // this works for an in-flight call too.
     let sessionId = null;
+    let resumedFrom = null;
     try {
       // The whole file, not its first line. The sidecar is named .jsonl but is a
       // single pretty-printed object, so reading line one yields "{" and throws --
@@ -508,7 +509,9 @@ function callFiles(stageDir) {
       // cost fix inert. The selftest fixture wrote it minified and so agreed with
       // the bug. A fixture must be written the way the kernel actually writes it.
       const raw = readFileSync(path.join(stageDir, `${label}.argv.jsonl`), "utf8");
-      sessionId = JSON.parse(raw).sessionId || null;
+      const meta = JSON.parse(raw);
+      sessionId = meta.sessionId || null;
+      resumedFrom = meta.resumedFrom || null;
     } catch {
       /* older runs wrote no sidecar */
     }
@@ -519,6 +522,7 @@ function callFiles(stageDir) {
       attempt: Number(label.match(/\.a(\d+)$/)?.[1] || 1) - 1,
       live,
       sessionId,
+      resumedFrom,
     });
   }
   return out.sort(
@@ -550,7 +554,7 @@ function callFiles(stageDir) {
 // exactly as they were, degrading to the previous behaviour rather than guessing.
 function applyMarginalAiu(calls) {
   const seen = new Map();
-  for (const c of [...calls].sort((a, b) => (a.round || 0) - (b.round || 0))) {
+  for (const c of calls) {
     if (c.aiu == null || !c.sessionId) continue;
     const prior = seen.get(c.sessionId) ?? 0;
     c.aiuSession = c.aiu;
@@ -800,9 +804,9 @@ export function readRun(runDir, root) {
   }
   const planned = new Map((plan?.stages || []).map((s) => [s.id, s]));
   const events = readEvents(runDir);
+  const preOrder = readCallOrder(runDir);
 
-  // Directory names carry the execution index (`03-review`), so a plain sort is
-  // the true order of the run.
+  const groups = [];
   for (const dirName of names.sort()) {
     const dir = path.join(runDir, dirName);
     const { id, ord, iter, key } = parseStageDir(dirName);
@@ -816,15 +820,37 @@ export function readRun(runDir, root) {
       call.round = c.round;
       call.attempt = c.attempt;
       call.sessionId = c.sessionId;
+      call.resumedFrom = c.resumedFrom;
+      call.stageId = id;
+      call.iter = iter;
       // Reading a .live.jsonl means this call's process has not exited yet, which
       // is a REAL in-flight signal rather than an mtime guess.
       call.inFlight = !!c.live;
       return call;
     });
-    // Before anything reads a cost off these. A resumed stage's later rounds carry
-    // the whole session's running total, so this is where that becomes per-call.
-    applyMarginalAiu(calls);
+    groups.push({ id, ord, iter, key, calls });
+  }
 
+  // Session checkpoints are cumulative across STAGES too. A `resumeFrom` target's
+  // first checkpoint already includes its source stage, so marginalisation must run
+  // globally in true call order rather than once per stage directory.
+  const orderedCalls = groups
+    .flatMap((group) => group.calls)
+    .sort((a, b) => {
+      const ak = preOrder?.get(`${a.stageId}/${a.iter || 0}/${a.round || 0}/${a.attempt || 0}`);
+      const bk = preOrder?.get(`${b.stageId}/${b.iter || 0}/${b.round || 0}/${b.attempt || 0}`);
+      if (ak !== undefined && bk !== undefined) return ak - bk;
+      if (ak !== undefined) return -1;
+      if (bk !== undefined) return 1;
+      return (
+        (a.iter || 0) - (b.iter || 0) ||
+        (a.round || 0) - (b.round || 0) ||
+        (a.attempt || 0) - (b.attempt || 0)
+      );
+    });
+  applyMarginalAiu(orderedCalls);
+
+  for (const { id, ord, iter, key, calls } of groups) {
     // ONE ROW PER ROUND, not one row per stage.
     //
     // A stage row holding all its rounds hid the interleaving that IS a fix loop.
@@ -853,6 +879,7 @@ export function readRun(runDir, root) {
       const resumedHere = rounds.some(
         (c) => c.sessionId && openedAt.get(c.sessionId) < (c.round || 0) * 1000 + (c.attempt || 0),
       );
+      const explicitResume = rounds.find((c) => c.resumedFrom)?.resumedFrom || null;
       stages.push({
         id,
         ord,
@@ -860,7 +887,8 @@ export function readRun(runDir, root) {
         round,
         // Observed, not declared. Overwritten below by the run record when one
         // exists and names WHICH conversation was inherited.
-        resume: resumedHere || null,
+        resume: explicitResume?.stage || resumedHere || null,
+        resumedFrom: explicitResume,
         // Unique per ROW now that a stage can appear more than once. The view keys
         // its expand state by this.
         key: round ? `${key}#r${round}` : key,
@@ -905,7 +933,6 @@ export function readRun(runDir, root) {
   //
   // Matched on the BASE id, so a fan-out stage that ran four iterations is not
   // re-added as a fifth, pending, row that never resolves.
-  const preOrder = readCallOrder(runDir);
   const seen = new Set(stages.map((s) => s.id));
   const maxIter = stages.reduce((n, s) => Math.max(n, s.iter || 0), 0);
   // A stage with NO model call leaves no log directory, so a fan-out command stage
@@ -985,6 +1012,7 @@ export function readRun(runDir, root) {
     st.declared = {
       tools: p.tools,
       resume: p.resume,
+      resumeFrom: p.resumeFrom,
       produces: p.produces,
       parse: p.parse,
       inLoop: p.inLoop,
@@ -1113,7 +1141,11 @@ export function readRun(runDir, root) {
       // handoff that cannot exist. The evidence is the session id -- a round truly
       // resumed if its session was already open in an EARLIER round of this same
       // stage and element.
-      const declaredResume = entries.find((e) => e.resume)?.resume || null;
+      const declaredResume =
+        entries.find((e) => e.resumeFrom)?.resumeFrom ||
+        entries.find((e) => e.resume)?.resume ||
+        null;
+      const explicitResume = entries.find((e) => e.resumedFrom)?.resumedFrom || null;
       const inherited = entries.some(
         (e) =>
           e.sessionId &&
@@ -1122,7 +1154,10 @@ export function readRun(runDir, root) {
       // Only ever UPGRADES the observed fact with the record's richer label (which
       // conversation was inherited). It must not downgrade to null: the call-derived
       // evidence above is the same evidence, and is available on a live run too.
-      if (inherited) st.resume = declaredResume || true;
+      if (explicitResume) {
+        st.resume = explicitResume.stage || declaredResume || true;
+        st.resumedFrom = explicitResume;
+      } else if (inherited) st.resume = declaredResume || true;
       st.sessionIds = [...new Set(entries.map((e) => e.sessionId).filter(Boolean))];
       st.expects = entries.find((e) => e.expects)?.expects || null;
       st.completion = entries.map((e) => e.completion).filter(Boolean);

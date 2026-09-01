@@ -58,6 +58,8 @@ eq(
 eq("a stage's declared key contract is shown", html.includes("declared key contract"), true);
 eq("a stage's deterministic completion rule is shown", html.includes("completion ·"), true);
 eq("a stage's resume prompt has its own designer row", html.includes("resume prompt"), true);
+eq("cross-stage session flow has its own designer row", html.includes("session</span>"), true);
+eq("cross-stage session flow names its source", html.includes("↩ from"), true);
 
 // ---------------------------------------------------------------------------
 // THE READ SIDE (design.mjs). This is where the panel's failures actually live,
@@ -87,6 +89,7 @@ mk("vendor/chainkit/examples/02-two/prompts/code.md", "a prompt, not a chain");
 mk("vendor/chainkit/.github/workflows/ci.yml", "name: CI\n");
 mk("chain/initial.md", "Initial {{spec}}");
 mk("chain/resume.md", "Continue {{spec}} and {{plan}}");
+mk("chain/fix.md", "Fix {{plan}}");
 mk(
   "chain/chain.yaml",
   [
@@ -99,6 +102,9 @@ mk(
     "    resume: true",
     "    resumePrompt: resume.md",
     "    produces: plan",
+    "  - id: fix",
+    "    prompt: fix.md",
+    "    resumeFrom: plan",
     "",
   ].join("\n"),
 );
@@ -111,6 +117,7 @@ eq("designer includes resumePrompt placeholders in dataflow", continuation.stage
   "spec",
   "plan",
 ]);
+eq("designer exposes the cross-stage session source", continuation.stages[1].resumeFrom, "plan");
 
 // Reproduce the real vendored extension layout, including the API mistake that
 // source-repo tests hid: two levels above the copied module is `<host>/.github`,

@@ -30,6 +30,7 @@ import {
 import { reduceCumulative } from "./kernel/cost.mjs";
 import { treeSnapshot, treeDelta, repositorySnapshot } from "./kernel/tree.mjs";
 import { runCompletion } from "./kernel/completion.mjs";
+import { makeSessionLedger } from "./kernel/session.mjs";
 
 const arg = (n, d) => {
   const i = process.argv.indexOf(`--${n}`);
@@ -275,6 +276,7 @@ writeFileSync(
         // unrestricted one in the only artifact anybody compares afterwards.
         tools: Array.isArray(s.tools) ? [...s.tools] : !!s.tools,
         resume: s.resume ?? null,
+        resumeFrom: s.resumeFrom ?? null,
         resumePrompt: s.resumePrompt ?? null,
         produces: s.produces ?? null,
         parse: s.parse ?? "text",
@@ -295,7 +297,7 @@ writeFileSync(
 
 const telemRows = [];
 const stageLog = [];
-const sessions = new Map();
+const sessionLedger = makeSessionLedger();
 let halted = null;
 
 console.log(`\n=== ${chain.name} [${tag}] — ${stages.length} stage(s) ===`);
@@ -338,6 +340,7 @@ function journalCall(stage, round, iter, attempt = 0) {
   } catch {
     /* the journal is an observability aid; never fail a run over it */
   }
+  return callSeq;
 }
 function journalCompletion(scope, check, identity = {}) {
   const event = {
@@ -361,13 +364,27 @@ function journalCompletion(scope, check, identity = {}) {
     /* additive observability must never change run behavior */
   }
 }
+function journalSession(type, detail) {
+  try {
+    appendFileSync(
+      path.join(logRoot, "_events.jsonl"),
+      JSON.stringify({
+        type,
+        timestamp: new Date().toISOString(),
+        ...detail,
+      }) + "\n",
+    );
+  } catch {
+    /* additive observability must never change run behavior */
+  }
+}
 async function executeOnce(stage, round = 0, iter = 0, attempt = 0, deterministicFailure = null) {
   const t0 = Date.now();
   const treeBefore = snap();
   const repoBefore = repositorySnapshot(workDir);
-  journalCall(stage, round, iter, attempt);
+  const invocationSeq = journalCall(stage, round, iter, attempt);
   process.stdout.write(
-    `→ ${stage.id}${iter ? ` [${iter}]` : ""}${round ? ` (round ${round})` : ""}${attempt ? ` (completion attempt ${attempt + 1})` : ""} … ${stage.run ? `$ ${stage.run}` : stage.model}${stage.tools ? " +tools" : ""}${stage.resume ? " +resume" : ""}\n`,
+    `→ ${stage.id}${iter ? ` [${iter}]` : ""}${round ? ` (round ${round})` : ""}${attempt ? ` (completion attempt ${attempt + 1})` : ""} … ${stage.run ? `$ ${stage.run}` : stage.model}${stage.tools ? " +tools" : ""}${stage.resume ? " +resume" : ""}${stage.resumeFrom ? ` +resume:${stage.resumeFrom}` : ""}\n`,
   );
   const res = stage.run
     ? await runCommandStage({ stage, ctx, workDir, logRoot, round, iter })
@@ -381,9 +398,21 @@ async function executeOnce(stage, round = 0, iter = 0, attempt = 0, deterministi
         iter,
         attempt,
         deterministicFailure,
-        sessions,
+        sessionLedger,
         maxCredits: arg("max-credits"),
       });
+  if (res.resumeFailure) {
+    journalSession("session.resume_failed", {
+      identity: { stage: stage.id, iter, round, attempt, callSeq: invocationSeq },
+      failure: res.resumeFailure,
+    });
+  } else if (res.resumed) {
+    journalSession("session.resumed", {
+      identity: { stage: stage.id, iter, round, attempt, callSeq: invocationSeq },
+      sessionId: res.sessionId,
+      resumedFrom: res.resumedFrom,
+    });
+  }
   if (res.telemetry) telemRows.push(res.telemetry);
   const filesChanged = treeDelta(treeBefore, snap());
   const repoAfter = repositorySnapshot(workDir);
@@ -402,6 +431,10 @@ async function executeOnce(stage, round = 0, iter = 0, attempt = 0, deterministi
     effort: stage.effort,
     tools: stage.tools,
     resume: stage.resume,
+    resumeFrom: stage.resumeFrom || null,
+    resumed: res.resumed || false,
+    resumedFrom: res.resumedFrom || null,
+    resumeFailure: res.resumeFailure || null,
     expects: stage.expects,
     completion: null,
     completionStatus: stage.completion ? "pending" : "absent",
@@ -478,6 +511,7 @@ async function executeOnce(stage, round = 0, iter = 0, attempt = 0, deterministi
         kind: res.kind,
         reason: res.error,
         raw: res.raw || null,
+        resumeFailure: res.resumeFailure || null,
       };
     return false;
   }
@@ -515,6 +549,18 @@ async function executeOnce(stage, round = 0, iter = 0, attempt = 0, deterministi
   // A stage with no `produces` still ran and still changed the tree -- that is its
   // product. Only the store entry is skipped.
   if (stage.produces) ctx.set(stage.produces, res.value, stage.id, round);
+  if (!stage.run) {
+    sessionLedger.record({
+      stage: stage.id,
+      iter,
+      round,
+      attempt,
+      callSeq: invocationSeq,
+      sessionId: res.sessionId,
+      model: stage.model,
+      provider: res.provider,
+    });
+  }
   const summary = summarize(res.value);
   const touched = filesChanged.length ? `, ✎ ${filesChanged.length} file(s)` : ", ✎ none";
   const produced = stage.produces ? `${stage.produces} ← ${summary}` : `(no artifact)`;
@@ -529,9 +575,9 @@ async function executeOnce(stage, round = 0, iter = 0, attempt = 0, deterministi
 
 // A MODEL TURN IS NOT COMPLETION. When a stage declares a deterministic
 // postcondition, the command -- not the model's claim -- decides whether that stage
-// may finish. A failure is fed back into the SAME stage and, when `resume: true`,
-// the same CLI session. This is deliberately generic: the kernel knows neither what
-// the command checks nor how the agent should repair it.
+// may finish. A failure is fed back into the SAME stage and the same CLI session
+// whenever that stage uses either continuation mode. This is deliberately generic:
+// the kernel knows neither what the command checks nor how the agent should repair it.
 async function execute(stage, round = 0, iter = 0, deterministicFailure = null) {
   if (!stage.completion) return executeOnce(stage, round, iter, 0, deterministicFailure);
 

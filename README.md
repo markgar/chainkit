@@ -35,7 +35,7 @@ loop:
   max: 3
 ```
 
-A `run` stage takes no `model`, `effort`, `tools` or `resume`, and the config is **rejected** if it carries one rather than ignoring it: `run: pnpm format` alongside `model: claude-opus-5` is an author who believes a model is involved, and a run record showing a model that never ran is unreadable next to one that did. For the same reason chain `defaults.model` is not folded into it.
+A `run` stage takes no `model`, `effort`, `tools`, `resume`, `resumeFrom`, or `resumePrompt`, and the config is **rejected** if it carries one rather than ignoring it: `run: pnpm format` alongside `model: claude-opus-5` is an author who believes a model is involved, and a run record showing a model that never ran is unreadable next to one that did. For the same reason chain `defaults.model` is not folded into it.
 
 When a command exists only to decide whether a model stage has finished its own work, it is **not a stage**. Attach it as that stage's bounded completion rule:
 
@@ -52,7 +52,20 @@ When a command exists only to decide whether a model stage has finished its own 
 
 Chainkit appends this requirement to the stage's initial prompt, then runs the command independently after every turn. A failure is captured and sent back to the same stage. With `resume: true`, later completion attempts continue the same CLI conversation with only a compact message containing the exact frozen command, attempt number, bounded failure output, and an instruction to return a complete replacement answer without repeating discovery. With `resume: false`, each retry is fresh and therefore receives the full initial prompt plus the failure context. Provider transport retries remain identical request retries because they have no intervening answer or tool context. The stage cannot finish until the command passes. It halts on the declared bound, on a repeated failure with no file change, or if the supposedly read-only completion command changes the repository, index, or HEAD.
 
-A resumed stage may also declare `resumePrompt: prompts/continue.md`. On a later loop invocation that is not repairing a deterministic completion failure, Chainkit renders this smaller authored prompt instead of replaying the initial prompt. `resumePrompt` is optional for compatibility, requires `resume: true`, and is validated and rendered with the same placeholder reachability rules as `prompt`.
+A stage may instead continue a compatible earlier model stage:
+
+```yaml
+- id: plan-fix
+  prompt: prompts/plan-fix.md
+  model: gpt-5.6-sol
+  resumeFrom: plan
+```
+
+`resumeFrom` sends only `plan-fix`'s own rendered prompt while continuing the latest successful `plan` invocation's CLI conversation. The original planner prompt, repository discoveries, tool results, and answer are already in that session and are not replayed. The source and target must use the same resolved CLI model, the source must be an earlier model stage, and both must occupy the same logical execution scope. Top-level stages may resume top-level stages. A foreach stage may resume only a stage from the same item; top-level-to-item, item-to-top-level, and cross-item session sharing are rejected.
+
+Within a bounded loop, matching is deterministic: the latest successful prior source invocation in the same scope wins. A source earlier in the loop body is available in the current round; a source later than the target is rejected because the target's first round would have nothing to resume. If a repeated source produced no successful invocation or no usable session id, the target fails with structured continuation telemetry — Chainkit never falls back to a fresh conversation.
+
+`resume: true` and `resumeFrom` are mutually exclusive. The former continues the same stage's own latest successful invocation; the latter selects another stage's lineage. Completion retries treat either inherited session identically and send compact failure feedback. A resumed stage may also declare `resumePrompt: prompts/continue.md`; on a later ordinary invocation that is already on the same target lineage, Chainkit renders this smaller authored prompt instead of replaying the target's initial prompt. `resumePrompt` requires either `resume: true` or `resumeFrom` and uses the same placeholder validation as `prompt`.
 
 Output-token telemetry uses the current CLI's `model.model_call_success.data.responseUsage.completion_tokens` as the authoritative source, with legacy `assistant.message.data.outputTokens` only as a fallback. Mixed streams are therefore counted once, while streams with no token telemetry remain explicitly unreported rather than appearing as zero.
 

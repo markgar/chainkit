@@ -164,6 +164,7 @@ function cliComplete({
   label = "call",
   maxCredits,
   sessionId,
+  resumedFrom,
   tools = false,
   cwd,
 }) {
@@ -253,23 +254,17 @@ function cliComplete({
     // --reasoning-effort that never reached the subprocess produced five arms
     // of flat, entirely plausible cost data. Also gives prompt size, which is
     // the denominator every cost claim here needs.
-    persistRaw(
-      logDir,
-      `${label}.argv`,
-      JSON.stringify(
-        {
-          model,
-          effort,
-          sessionId: sessionId || null,
-          tools: Array.isArray(tools) ? [...tools] : !!tools,
-          cwd: cwd || null,
-          promptChars: prompt ? prompt.length : 0,
-          argv: args.map((a) => (a === prompt ? `<prompt:${prompt.length}chars>` : a)),
-        },
-        null,
-        2,
-      ),
-    );
+    const callMeta = {
+      model,
+      effort,
+      sessionId: sessionId || null,
+      resumedFrom: resumedFrom || null,
+      tools: Array.isArray(tools) ? [...tools] : !!tools,
+      cwd: cwd || null,
+      promptChars: prompt ? prompt.length : 0,
+      argv: args.map((a) => (a === prompt ? `<prompt:${prompt.length}chars>` : a)),
+    };
+    persistRaw(logDir, `${label}.argv`, JSON.stringify(callMeta, null, 2));
     let out = "";
     // A timeout kills the child and then resolves through the normal `close` path,
     // so without this flag the caller sees only whatever partial text the model had
@@ -293,6 +288,18 @@ function cliComplete({
       clearTimeout(timer);
       const telemetry = parseCopilotJsonl(out);
       const rawPath = persistRaw(logDir, label, out);
+      persistRaw(
+        logDir,
+        `${label}.argv`,
+        JSON.stringify(
+          {
+            ...callMeta,
+            sessionId: telemetry.sessionId || sessionId || null,
+          },
+          null,
+          2,
+        ),
+      );
       const usage = telemetry.parsed
         ? {
             input: null,
@@ -397,6 +404,7 @@ export async function complete({
   label,
   maxCredits,
   sessionId,
+  resumedFrom,
   tools = false,
   cwd,
 }) {
@@ -411,6 +419,7 @@ export async function complete({
     label,
     maxCredits,
     sessionId,
+    resumedFrom,
     tools,
     cwd,
   });

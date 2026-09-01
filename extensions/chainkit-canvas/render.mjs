@@ -479,13 +479,20 @@ function render(s) {
   // session ids show; a row that has not run yet may only PREDICT, and only when
   // there is an earlier round for it to resume.
   function resumeNote(st) {
-    const predicted = (st.round || 0) > 1 ? st.declared?.resume : null;
+    const predicted =
+      (st.round || 0) > 1 ? st.declared?.resumeFrom || st.declared?.resume : st.declared?.resumeFrom;
     const inherits = st.resume || (st.status === "ran" ? null : predicted);
     if (!inherits) return "";
     // Named with the chain's OWN word for the stage, the same way the fan-out unit
     // is. The view still has no idea what a "fix" is; it just repeats the label.
-    const what = inherits === true ? \`previous \${st.id} context\` : \`\${inherits} context\`;
-    return \`<span class="chan" title="this call continued the previous round's conversation instead of starting cold">↩ resumes \${esc(what)}</span>\`;
+    const source = st.resumedFrom?.stage || (inherits === true ? st.id : inherits);
+    const session = st.resumedFrom?.sessionId
+      ? \` · session \${st.resumedFrom.sessionId}\`
+      : "";
+    const title = st.resumedFrom
+      ? \`continued \${source} call \${st.resumedFrom.callSeq || "?"}\${session}\`
+      : "this call continued an earlier conversation instead of starting cold";
+    return \`<span class="chan" title="\${esc(title)}">↩ resumes \${esc(source)} context</span>\`;
   }
 
   // The handoffs that are NOT model calls. A stage's files and its inherited

@@ -137,6 +137,7 @@ function stageHtml(s, n) {
         : '<span class="pill think">reasons only</span>',
     s.parse === "json" ? '<span class="pill">json</span>' : "",
     s.resume ? '<span class="pill resume">↻ same session</span>' : "",
+    s.resumeFrom ? \`<span class="pill resume">↩ from \${esc(s.resumeFrom)}</span>\` : "",
     s.optional ? '<span class="pill opt">optional</span>' : "",
     s.effort ? \`<span class="pill">\${esc(s.effort)}</span>\` : "",
     s.expects
@@ -162,6 +163,7 @@ function stageHtml(s, n) {
       \${pills}
     </div>
     <div class="io"><span class="lbl">reads</span><span>\${uses}</span></div>
+    \${s.resumeFrom ? \`<div class="io"><span class="lbl">session</span><span class="art">← \${esc(s.resumeFrom)}</span></div>\` : ""}
     <div class="io"><span class="lbl">writes</span><span class="prod">\${
       // A stage need not name an artifact. When it does not, its product is the
       // working tree -- say that, rather than rendering {{undefined}}.

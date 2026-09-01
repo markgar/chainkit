@@ -198,6 +198,12 @@ const steps = [
     args: [path.join(here, "completion.selftest.mjs")],
     cwd: here,
   },
+  {
+    name: "selftest:resume",
+    cmd: "node",
+    args: [path.join(here, "resume.selftest.mjs")],
+    cwd: here,
+  },
   ...canvases.map((f) => ({
     name: `selftest:${path.basename(path.dirname(f))}`,
     cmd: "node",

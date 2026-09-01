@@ -89,7 +89,7 @@ stages:
     parse: text
     model: mai-code-1.1-flash
     tools: true
-    resume: true # continue the builder's own session for THIS chunk
+    resumeFrom: code # continue THIS item's builder session; items never share one
 
 loop:
   stages: [plan, plan-review]
