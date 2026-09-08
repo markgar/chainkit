@@ -13,6 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { Linter } from "eslint";
 import { format } from "prettier";
 import { installDistribution, verifyDistribution } from "./vendor.mjs";
 
@@ -61,6 +62,21 @@ async function formatterClean(root, relative) {
       trailingComma: "all",
     })) === text
   );
+}
+
+const linter = new Linter({ configType: "flat" });
+function noUndefErrors(root, relative) {
+  const file = path.join(root, relative);
+  return linter
+    .verify(
+      readFileSync(file, "utf8"),
+      {
+        languageOptions: { ecmaVersion: 2023, sourceType: "module" },
+        rules: { "no-undef": "error" },
+      },
+      { filename: path.basename(file) },
+    )
+    .map((message) => `${message.line}:${message.column} ${message.message}`);
 }
 
 const source = mkdtempSync(path.join(tmpdir(), "chainkit-source-"));
@@ -113,6 +129,17 @@ try {
     ok(
       `installed ${relative} is clean under a representative consumer formatter`,
       await formatterClean(consumer, relative),
+    );
+  for (const relative of [
+    ".github/extensions/chainkit-canvas/extension.mjs",
+    ".github/extensions/chainkit-canvas/render.mjs",
+    ".github/extensions/chainkit-canvas/selftest.mjs",
+    ".github/extensions/chainkit-canvas/telemetry.mjs",
+  ])
+    eq(
+      `installed ${relative} has no ambient globals under consumer no-undef`,
+      noUndefErrors(consumer, relative),
+      [],
     );
   const vendorManifest = JSON.parse(
     readFileSync(path.join(consumer, ".chainkit/vendor.json"), "utf8"),

@@ -20,8 +20,10 @@ import {
   symlinkSync,
   utimesSync,
 } from 'node:fs';
+import console from 'node:console';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import process from 'node:process';
 import {
   readRun,
   listRuns,

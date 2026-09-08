@@ -11,9 +11,11 @@
 // Read-only by construction: it opens files under <root>/results and
 // never writes there, so watching a run cannot perturb the run.
 
+import { Buffer } from 'node:buffer';
+import process from 'node:process';
 import { createServer } from 'node:http';
 import { existsSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, URL } from 'node:url';
 import path from 'node:path';
 import {
   joinSession,
