@@ -44,8 +44,29 @@
 // derived from the per-call streams, and the record is optional enrichment,
 // never a precondition.
 
-import { readdirSync, readFileSync, statSync, existsSync } from "node:fs";
+import { readdirSync, readFileSync, lstatSync, existsSync } from "node:fs";
 import path from "node:path";
+
+function isDirectory(file) {
+  try {
+    return lstatSync(file).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function isFile(file) {
+  try {
+    return lstatSync(file).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function readRegularFile(file) {
+  if (!isFile(file)) throw new Error(`not a regular file: ${file}`);
+  return readFileSync(file, "utf8");
+}
 
 // Tools whose arguments carry the interesting bit in different fields.
 //
@@ -239,7 +260,7 @@ export function runHeadline(summary, unit = "element") {
 function parseJsonl(file) {
   let raw;
   try {
-    raw = readFileSync(file, "utf8");
+    raw = readRegularFile(file);
   } catch {
     return [];
   }
@@ -449,7 +470,7 @@ function readCall(file, label) {
 
   let mtime = 0;
   try {
-    mtime = statSync(file).mtimeMs;
+    mtime = lstatSync(file).mtimeMs;
   } catch {
     /* file vanished between readdir and stat */
   }
@@ -493,6 +514,7 @@ function callFiles(stageDir) {
   }
   for (const n of names) {
     if (!n.endsWith(".jsonl") || n.endsWith(".argv.jsonl")) continue;
+    if (!isFile(path.join(stageDir, n))) continue;
     // A call in flight has only `<label>.live.jsonl`; a settled one has only
     // `<label>.jsonl` (the harness removes the live file once it writes the final
     // one). Normalise to the label so a call never appears twice, and remember
@@ -513,7 +535,7 @@ function callFiles(stageDir) {
       // silently, into the catch below, leaving every call sessionless and the
       // cost fix inert. The selftest fixture wrote it minified and so agreed with
       // the bug. A fixture must be written the way the kernel actually writes it.
-      const raw = readFileSync(path.join(stageDir, `${label}.argv.jsonl`), "utf8");
+      const raw = readRegularFile(path.join(stageDir, `${label}.argv.jsonl`));
       const meta = JSON.parse(raw);
       sessionId = meta.sessionId || null;
       resumedFrom = meta.resumedFrom || null;
@@ -582,21 +604,20 @@ export function listRuns(root) {
     return roots.flatMap((r) => listRuns(r)).sort((a, b) => b.mtime - a.mtime);
   }
   const only = roots[0];
-  const logsDir = path.join(only, "results", "chain-runs", "logs");
-  if (!existsSync(logsDir)) return [];
+  const resultsDir = path.join(only, "results");
+  const chainRunsDir = path.join(resultsDir, "chain-runs");
+  const logsDir = path.join(chainRunsDir, "logs");
+  // Do not follow a symlink at any boundary component. A dashboard root grants
+  // read access to that root's results, not to an arbitrary directory a results
+  // symlink happens to target.
+  if (![resultsDir, chainRunsDir, logsDir].every(isDirectory)) return [];
   return readdirSync(logsDir)
-    .filter((n) => {
-      try {
-        return statSync(path.join(logsDir, n)).isDirectory();
-      } catch {
-        return false;
-      }
-    })
+    .filter((n) => isDirectory(path.join(logsDir, n)))
     .map((n) => ({
       id: n,
       dir: path.join(logsDir, n),
       root: only,
-      mtime: statSync(path.join(logsDir, n)).mtimeMs,
+      mtime: lstatSync(path.join(logsDir, n)).mtimeMs,
     }))
     .sort((a, b) => b.mtime - a.mtime);
 }
@@ -746,7 +767,7 @@ function runOrder(rows, order = null) {
 function readCallOrder(runDir) {
   let text;
   try {
-    text = readFileSync(path.join(runDir, "_calls.jsonl"), "utf8");
+    text = readRegularFile(path.join(runDir, "_calls.jsonl"));
   } catch {
     return null;
   }
@@ -766,7 +787,7 @@ function readCallOrder(runDir) {
 function readEvents(runDir) {
   let text;
   try {
-    text = readFileSync(path.join(runDir, "_events.jsonl"), "utf8");
+    text = readRegularFile(path.join(runDir, "_events.jsonl"));
   } catch {
     return [];
   }
@@ -828,14 +849,14 @@ function mergeOrder(callOrder, commands) {
 export function readRun(runDir, root) {
   const stages = [];
   const base = path.basename(runDir);
+  const logsDir = path.resolve(root, "results", "chain-runs", "logs");
+  const resolvedRunDir = path.resolve(runDir);
+  if (path.dirname(resolvedRunDir) !== logsDir || !isDirectory(resolvedRunDir))
+    return { id: base, stages: [], totals: {}, live: false };
   let names;
   try {
     names = readdirSync(runDir).filter((n) => {
-      try {
-        return statSync(path.join(runDir, n)).isDirectory();
-      } catch {
-        return false;
-      }
+      return isDirectory(path.join(runDir, n));
     });
   } catch {
     return { id: path.basename(runDir), stages: [], totals: {}, live: false };
@@ -847,7 +868,7 @@ export function readRun(runDir, root) {
   // existed still reads, it just shows only what it observed.
   let plan = null;
   try {
-    plan = JSON.parse(readFileSync(path.join(runDir, "_chain.json"), "utf8"));
+    plan = JSON.parse(readRegularFile(path.join(runDir, "_chain.json")));
   } catch {
     /* absent, or being written */
   }
@@ -857,7 +878,7 @@ export function readRun(runDir, root) {
   const summaryFile = path.join(root, "results", "chain-runs", `${base}.json`);
   if (existsSync(summaryFile)) {
     try {
-      summary = JSON.parse(readFileSync(summaryFile, "utf8"));
+      summary = JSON.parse(readRegularFile(summaryFile));
     } catch {
       /* mid-write */
     }
@@ -1321,13 +1342,13 @@ export function readRun(runDir, root) {
   // yet produced a first assistant message is starting, not stale.
   let planMtime = 0;
   try {
-    planMtime = statSync(path.join(runDir, "_chain.json")).mtimeMs;
+    planMtime = lstatSync(path.join(runDir, "_chain.json")).mtimeMs;
   } catch {
     /* pre-manifest run */
   }
   let eventsMtime = 0;
   try {
-    eventsMtime = statSync(path.join(runDir, "_events.jsonl")).mtimeMs;
+    eventsMtime = lstatSync(path.join(runDir, "_events.jsonl")).mtimeMs;
   } catch {
     /* pre-event run */
   }

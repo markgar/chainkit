@@ -11,7 +11,15 @@
 // change reintroduces an allow-list of known stage kinds, that stage vanishes and
 // this test fails.
 
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+  rmSync,
+  symlinkSync,
+  utimesSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -1310,14 +1318,24 @@ rmSync(root, { recursive: true, force: true });
 {
   const rA = mkdtempSync(path.join(tmpdir(), "ck-rootA-"));
   const rB = mkdtempSync(path.join(tmpdir(), "ck-rootB-"));
+  const outside = mkdtempSync(path.join(tmpdir(), "ck-outside-"));
   const mk = (root, id, stamp) => {
     const d = path.join(root, "results", "chain-runs", "logs", id);
     mkdirSync(d, { recursive: true });
     writeFileSync(path.join(d, "_calls.jsonl"), "");
     utimesSync(d, stamp, stamp);
+    return d;
   };
-  mk(rA, "proj__a__2026-01-01T00-00-00", 2000);
+  const projectRun = mk(rA, "proj__a__2026-01-01T00-00-00", 2000);
   mk(rB, "engine__b__2026-01-02T00-00-00", 3000);
+  const outsideRun = mk(outside, "secret__x__2026-01-03T00-00-00", 4000);
+  const projectJournal = path.join(projectRun, "_calls.jsonl");
+  const before = readFileSync(projectJournal, "utf8");
+  symlinkSync(
+    outsideRun,
+    path.join(rA, "results", "chain-runs", "logs", "escaped__x__2026-01-03T00-00-00"),
+    "dir",
+  );
 
   const both = listRuns([rA, rB]);
   eq("listRuns unions every root", both.length, 2);
@@ -1326,9 +1344,18 @@ rmSync(root, { recursive: true, force: true });
   eq("older run carries its own root", both[1].root, rA);
   eq("a bare root string still works", listRuns(rA).length, 1);
   eq("a missing root is skipped, not fatal", listRuns([path.join(rA, "nope"), rB]).length, 1);
+  eq(
+    "a symlink cannot expose a run outside the selected root",
+    listRuns(rA).map((run) => run.id),
+    ["proj__a__2026-01-01T00-00-00"],
+  );
+  eq("readRun refuses a directory outside root/results", readRun(outsideRun, rA).stages, []);
+  readRun(projectRun, rA);
+  eq("reading a run does not change its telemetry", readFileSync(projectJournal, "utf8"), before);
 
   rmSync(rA, { recursive: true, force: true });
   rmSync(rB, { recursive: true, force: true });
+  rmSync(outside, { recursive: true, force: true });
 }
 
 // THE PAGE'S OWN SCRIPT. `node --check render.mjs` only proves the template

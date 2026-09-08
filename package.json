@@ -11,7 +11,8 @@
   "license": "MIT",
   "scripts": {
     "check": "node check.mjs",
-    "selftest": "node selftest.mjs && node completion.selftest.mjs && node resume.selftest.mjs"
+    "selftest": "node selftest.mjs && node completion.selftest.mjs && node resume.selftest.mjs && node vendor.selftest.mjs",
+    "vendor": "node vendor.mjs"
   },
   "dependencies": {
     "yaml": "^2.8.1"

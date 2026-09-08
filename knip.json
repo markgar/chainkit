@@ -4,6 +4,8 @@
     "run.mjs",
     "prep-workdir.mjs",
     "models.mjs",
+    "vendor.mjs",
+    "vendor.selftest.mjs",
     "extensions/*/extension.mjs",
     "extensions/*/selftest.mjs"
   ],
