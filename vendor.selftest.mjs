@@ -12,6 +12,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { format } from "prettier";
 import { installDistribution, verifyDistribution } from "./vendor.mjs";
 
 let passed = 0;
@@ -49,19 +51,36 @@ function names(directory) {
   return readdirSync(directory).sort();
 }
 
+async function formatterClean(root, relative) {
+  const file = path.join(root, relative);
+  const text = readFileSync(file, "utf8");
+  return (
+    (await format(text, {
+      filepath: file,
+      singleQuote: true,
+      trailingComma: "all",
+    })) === text
+  );
+}
+
 const source = mkdtempSync(path.join(tmpdir(), "chainkit-source-"));
 const consumer = mkdtempSync(path.join(tmpdir(), "chainkit-consumer-"));
+const projectRoot = path.dirname(fileURLToPath(import.meta.url));
+const canonical = (relative) => readFileSync(path.join(projectRoot, relative), "utf8");
 
 try {
   write(source, "LICENSE", "MIT\n");
   write(source, "README.md", "fixture\n");
   write(source, "vendor.mjs", "// fixture installer\n");
-  write(source, "extensions/chainkit-canvas/extension.mjs", "// extension v1\n");
-  write(source, "extensions/chainkit-canvas/render.mjs", "// render v1\n");
-  write(source, "extensions/chainkit-canvas/selftest.mjs", "// selftest v1\n");
-  write(source, "extensions/chainkit-canvas/telemetry.mjs", "// telemetry v1\n");
+  for (const relative of [
+    "extensions/chainkit-canvas/extension.mjs",
+    "extensions/chainkit-canvas/render.mjs",
+    "extensions/chainkit-canvas/selftest.mjs",
+    "extensions/chainkit-canvas/telemetry.mjs",
+    "skills/chainkit/SKILL.md",
+  ])
+    write(source, relative, canonical(relative));
   write(source, "extensions/chainkit-canvas/obsolete.mjs", "// removed in v2\n");
-  write(source, "skills/chainkit/SKILL.md", "# skill v1\n");
   git(source, "init", "-q", "-b", "main");
   git(source, "config", "user.email", "chainkit@local");
   git(source, "config", "user.name", "chainkit");
@@ -84,6 +103,17 @@ try {
     names(path.join(consumer, ".github/skills/chainkit")),
     ["SKILL.md"],
   );
+  for (const relative of [
+    ".github/extensions/chainkit-canvas/extension.mjs",
+    ".github/extensions/chainkit-canvas/render.mjs",
+    ".github/extensions/chainkit-canvas/selftest.mjs",
+    ".github/extensions/chainkit-canvas/telemetry.mjs",
+    ".github/skills/chainkit/SKILL.md",
+  ])
+    ok(
+      `installed ${relative} is clean under a representative consumer formatter`,
+      await formatterClean(consumer, relative),
+    );
   const vendorManifest = JSON.parse(
     readFileSync(path.join(consumer, ".chainkit/vendor.json"), "utf8"),
   );

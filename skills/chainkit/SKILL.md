@@ -20,15 +20,15 @@ description: Validate, run, inspect, and update a repository's vendored Chainkit
 
    ```js
    open_canvas({
-     canvasId: "chainkit-runs",
-     instanceId: "chainkit-run",
-     input: { root: "/absolute/worktree/.chainkit", run: "latest" },
+     canvasId: 'chainkit-runs',
+     instanceId: 'chainkit-run',
+     input: { root: '/absolute/worktree/.chainkit', run: 'latest' },
    });
 
    open_canvas({
-     canvasId: "chainkit-runs",
-     instanceId: "chainkit-run",
-     input: { root: "/absolute/worktree/.chainkit", run: "<full-run-id>" },
+     canvasId: 'chainkit-runs',
+     instanceId: 'chainkit-run',
+     input: { root: '/absolute/worktree/.chainkit', run: '<full-run-id>' },
    });
    ```
 

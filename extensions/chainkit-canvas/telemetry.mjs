@@ -44,8 +44,8 @@
 // derived from the per-call streams, and the record is optional enrichment,
 // never a precondition.
 
-import { readdirSync, readFileSync, lstatSync, existsSync } from "node:fs";
-import path from "node:path";
+import { readdirSync, readFileSync, lstatSync, existsSync } from 'node:fs';
+import path from 'node:path';
 
 function isDirectory(file) {
   try {
@@ -65,7 +65,7 @@ function isFile(file) {
 
 function readRegularFile(file) {
   if (!isFile(file)) throw new Error(`not a regular file: ${file}`);
-  return readFileSync(file, "utf8");
+  return readFileSync(file, 'utf8');
 }
 
 // Tools whose arguments carry the interesting bit in different fields.
@@ -82,95 +82,110 @@ function shortPath(p) {
   // The CLI spills a large tool result to a temp file and the model then `view`s
   // it back. Rendered as a path this is actively misleading -- it reads as the
   // model opening a repo file, when it is re-reading something it already had.
-  if (/copilot-tool-output/.test(s)) return "(its own tool output)";
-  return s.split("/").slice(-2).join("/");
+  if (/copilot-tool-output/.test(s)) return '(its own tool output)';
+  return s.split('/').slice(-2).join('/');
 }
 
 // "a.ts, b.ts +3" — enough to tell two batches apart without wrapping the row.
 function summarizeList(items, render, max = 3) {
   const shown = items.slice(0, max).map(render).filter(Boolean);
-  if (!shown.length) return "";
+  if (!shown.length) return '';
   const rest = items.length - shown.length;
-  return shown.join(", ") + (rest > 0 ? ` +${rest}` : "");
+  return shown.join(', ') + (rest > 0 ? ` +${rest}` : '');
 }
 
 // Last resort: say something true about args we have no rule for, rather than
 // nothing. Prefers a short scalar; falls back to naming the keys, which at least
 // distinguishes two calls to the same unknown tool.
 function describeUnknown(args) {
-  const entries = Object.entries(args).filter(([, v]) => v != null && v !== "");
-  if (!entries.length) return "";
+  const entries = Object.entries(args).filter(([, v]) => v != null && v !== '');
+  if (!entries.length) return '';
   const scalar = entries.find(
-    ([, v]) => (typeof v === "string" && v.length <= 120) || typeof v === "number",
+    ([, v]) =>
+      (typeof v === 'string' && v.length <= 120) || typeof v === 'number',
   );
   if (scalar) return String(scalar[1]);
   const arr = entries.find(([, v]) => Array.isArray(v) && v.length);
   if (arr) {
     const summary = summarizeList(arr[1], (el) =>
-      typeof el === "string"
+      typeof el === 'string'
         ? shortPath(el)
-        : el && typeof el === "object" && el.path
+        : el && typeof el === 'object' && el.path
           ? shortPath(el.path)
-          : "",
+          : '',
     );
     if (summary) return summary;
     return `${arr[0]}[${arr[1].length}]`;
   }
   return entries
     .map(([k]) => k)
-    .join(", ")
+    .join(', ')
     .slice(0, 120);
 }
 
 export function describeTool(name, args) {
-  if (!args || typeof args !== "object") return "";
+  if (!args || typeof args !== 'object') return '';
   const p = args.path || args.file || args.filePath;
-  const rel = p ? shortPath(p) : "";
+  const rel = p ? shortPath(p) : '';
   switch (name) {
-    case "view":
-      return rel + (Array.isArray(args.view_range) ? `:${args.view_range.join("-")}` : "");
-    case "edit":
-    case "create":
+    case 'view':
+      return (
+        rel +
+        (Array.isArray(args.view_range) ? `:${args.view_range.join('-')}` : '')
+      );
+    case 'edit':
+    case 'create':
       return rel;
-    case "bash":
-      return String(args.command || "").slice(0, 160);
-    case "grep":
-      return `/${args.pattern || ""}/ ${args.glob || args.type || ""}`.trim();
-    case "glob":
-      return String(args.pattern || "");
+    case 'bash':
+      return String(args.command || '').slice(0, 160);
+    case 'grep':
+      return `/${args.pattern || ''}/ ${args.glob || args.type || ''}`.trim();
+    case 'glob':
+      return String(args.pattern || '');
     // A batch reader: one call is many files, so the count is as interesting as
     // the names. Without it every call to it looks identical. Names are deduped
     // because a batch legitimately lists one file several times (same path,
     // different `find` terms), and "design.md, design.md, design.md" spends the
     // whole row saying one thing. The count is left
     // as the true target count, so the two disagreeing is meaningful.
-    case "repo_read": {
+    case 'repo_read': {
       const targets = Array.isArray(args.targets) ? args.targets : [];
       const seen = [];
       for (const t of targets) {
-        const n = typeof t === "string" ? shortPath(t) : t && t.path ? shortPath(t.path) : "";
+        const n =
+          typeof t === 'string'
+            ? shortPath(t)
+            : t && t.path
+              ? shortPath(t.path)
+              : '';
         if (n && !seen.includes(n)) seen.push(n);
       }
       const names = summarizeList(seen, (n) => n);
-      return targets.length > 3 ? `${names} · ${targets.length} targets` : names;
+      return targets.length > 3
+        ? `${names} · ${targets.length} targets`
+        : names;
     }
-    case "repo_changes": {
+    case 'repo_changes': {
       const paths = Array.isArray(args.paths) ? args.paths.map(shortPath) : [];
-      const scope = paths.length ? summarizeList(paths, (n) => n) : "whole worktree";
-      return `${args.base || "HEAD"} → ${scope}`;
+      const scope = paths.length
+        ? summarizeList(paths, (n) => n)
+        : 'whole worktree';
+      return `${args.base || 'HEAD'} → ${scope}`;
     }
-    case "repo_read_ref": {
+    case 'repo_read_ref': {
       const targets = Array.isArray(args.targets) ? args.targets : [];
       const names = summarizeList(targets, (t) =>
-        shortPath(typeof t === "string" ? t : t?.path || ""),
+        shortPath(typeof t === 'string' ? t : t?.path || ''),
       );
-      return `${args.ref || "HEAD"} · ${names}`;
+      return `${args.ref || 'HEAD'} · ${names}`;
     }
-    case "ts_symbol":
-      return String(args.symbol || "");
+    case 'ts_symbol':
+      return String(args.symbol || '');
     default:
       return (
-        rel || String(args.command || args.pattern || "").slice(0, 120) || describeUnknown(args)
+        rel ||
+        String(args.command || args.pattern || '').slice(0, 120) ||
+        describeUnknown(args)
       );
   }
 }
@@ -178,27 +193,28 @@ export function describeTool(name, args) {
 // A finished process and a successful delivery are different facts. Keep the
 // classification in the reader so every renderer gets the same answer.
 export function runState(summary, live) {
-  if (live) return "live";
-  if (!summary) return "idle";
-  if (summary.delivered === true) return "delivered";
-  if (summary.halted) return "halted";
-  if (summary.verified === true) return "verified";
-  if (summary.completed === true) return "completed";
-  return "failed";
+  if (live) return 'live';
+  if (!summary) return 'idle';
+  if (summary.delivered === true) return 'delivered';
+  if (summary.halted) return 'halted';
+  if (summary.verified === true) return 'verified';
+  if (summary.completed === true) return 'completed';
+  return 'failed';
 }
 
 function gateFailure(tail) {
-  const lines = String(tail || "")
-    .split("\n")
+  const lines = String(tail || '')
+    .split('\n')
     .map((line) => line.trim())
     .filter(Boolean);
   for (let i = 0; i < lines.length; i++) {
-    const heading = /^Unused exported (types|functions|classes|interfaces|enums) \(\d+\)$/i.exec(
-      lines[i],
-    );
+    const heading =
+      /^Unused exported (types|functions|classes|interfaces|enums) \(\d+\)$/i.exec(
+        lines[i],
+      );
     if (heading && lines[i + 1]) {
       const name = lines[i + 1].split(/\s+/)[0];
-      const kind = heading[1].replace(/s$/, "");
+      const kind = heading[1].replace(/s$/, '');
       return `unused exported ${kind} ${name}`;
     }
   }
@@ -209,33 +225,35 @@ function gateFailure(tail) {
       /^Error:/.test(line) ||
       /\btests? failed\b/i.test(line),
   );
-  return actionable ? actionable.replace(/^.*?\/(?=[^/]+\/[^/]+:\d)/, "") : "";
+  return actionable ? actionable.replace(/^.*?\/(?=[^/]+\/[^/]+:\d)/, '') : '';
 }
 
 // One sentence beside the terminal badge: enough outcome to distinguish "the
 // process failed immediately" from "it built everything and the final judge found
 // one remaining issue". It is derived only from recorded facts.
-export function runHeadline(summary, unit = "element") {
-  if (!summary) return "";
-  const iterations = Array.isArray(summary.foreach?.iterations) ? summary.foreach.iterations : [];
+export function runHeadline(summary, unit = 'element') {
+  if (!summary) return '';
+  const iterations = Array.isArray(summary.foreach?.iterations)
+    ? summary.foreach.iterations
+    : [];
   const count = Number(summary.foreach?.count ?? iterations.length);
-  const legacy = !("completionStatus" in summary);
+  const legacy = !('completionStatus' in summary);
   const passed = iterations.filter(
     (iteration) => (iteration.completion || iteration.gate)?.ok === true,
   ).length;
   const noun = count === 1 ? unit : `${unit}s`;
   const progress = count
-    ? `Completed ${count}/${count} ${noun}; ${passed}/${count} ${legacy ? "gates" : "completion checks"} passed`
-    : "";
+    ? `Completed ${count}/${count} ${noun}; ${passed}/${count} ${legacy ? 'gates' : 'completion checks'} passed`
+    : '';
 
   if (summary.delivered === true) {
     return progress
-      ? `${progress}, and ${legacy ? "the final gate" : "chain completion"} passed.`
-      : `Delivered; ${legacy ? "the final gate" : "chain completion"} passed.`;
+      ? `${progress}, and ${legacy ? 'the final gate' : 'chain completion'} passed.`
+      : `Delivered; ${legacy ? 'the final gate' : 'chain completion'} passed.`;
   }
   if (summary.halted) {
-    const where = summary.halted.stage ? ` at ${summary.halted.stage}` : "";
-    return `Stopped${where}: ${summary.halted.reason || summary.halted.kind || "the run halted"}.`;
+    const where = summary.halted.stage ? ` at ${summary.halted.stage}` : '';
+    return `Stopped${where}: ${summary.halted.reason || summary.halted.kind || 'the run halted'}.`;
   }
   const completion = summary.completion || summary.gate;
   if (completion?.ok === false) {
@@ -243,18 +261,20 @@ export function runHeadline(summary, unit = "element") {
     const reason = gateFailure(last.tail);
     const subject = legacy
       ? progress
-        ? "the final gate"
-        : "The final gate"
+        ? 'the final gate'
+        : 'The final gate'
       : progress
-        ? "chain completion"
-        : "Chain completion";
-    return `${progress ? `${progress}, but ` : ""}${subject} failed${reason ? `: ${reason}` : ""}.`;
+        ? 'chain completion'
+        : 'Chain completion';
+    return `${progress ? `${progress}, but ` : ''}${subject} failed${reason ? `: ${reason}` : ''}.`;
   }
-  if (summary.completed === true && summary.completionStatus === "absent")
+  if (summary.completed === true && summary.completionStatus === 'absent')
     return progress
       ? `${progress}; completed without declared chain completion, so it is unverified.`
-      : "Completed without declared chain completion; unverified.";
-  return progress ? `${progress}, but the run was not delivered.` : "Finished without delivery.";
+      : 'Completed without declared chain completion; unverified.';
+  return progress
+    ? `${progress}, but the run was not delivered.`
+    : 'Finished without delivery.';
 }
 
 function parseJsonl(file) {
@@ -265,7 +285,7 @@ function parseJsonl(file) {
     return [];
   }
   const out = [];
-  for (const line of raw.split("\n")) {
+  for (const line of raw.split('\n')) {
     const s = line.trim();
     if (!s) continue;
     try {
@@ -295,7 +315,7 @@ function parseJsonl(file) {
 // them as one batch. Peak is a separate sweep, because a group of 8 does not mean 8
 // were ever open at once.
 export function annotateConcurrency(steps, lastAt = null) {
-  const tools = steps.filter((s) => s.kind === "tool" && s.at);
+  const tools = steps.filter((s) => s.kind === 'tool' && s.at);
   const end = (s) => Date.parse(s.endAt || lastAt || s.at);
   const iv = tools
     .map((s) => ({ s, a: Date.parse(s.at), b: end(s) }))
@@ -367,8 +387,8 @@ function readCall(file, label) {
   // measured yet". Same trap already fixed in the grader: 0 sums into a total
   // that looks complete, null cannot.
   let nanoAiu = null;
-  let model = "";
-  let text = "";
+  let model = '';
+  let text = '';
   let prompt = null;
   let done = false;
   const pending = new Map();
@@ -376,62 +396,68 @@ function readCall(file, label) {
   for (const ev of events) {
     const d = ev.data || {};
     switch (ev.type) {
-      case "user.message":
-        if (prompt == null && typeof d.content === "string") prompt = d.content;
+      case 'user.message':
+        if (prompt == null && typeof d.content === 'string') prompt = d.content;
         break;
-      case "tool.execution_start":
+      case 'tool.execution_start':
         pending.set(d.toolCallId, steps.length);
         steps.push({
-          kind: "tool",
+          kind: 'tool',
           name: d.toolName,
           detail: describeTool(d.toolName, d.arguments),
           at: ev.timestamp,
           endAt: null,
-          status: "running",
+          status: 'running',
         });
         if (d.model) model = d.model;
         break;
-      case "tool.execution_complete": {
+      case 'tool.execution_complete': {
         const i = pending.get(d.toolCallId);
         if (i != null && steps[i]) {
-          steps[i].status = d.success === false ? "failed" : "ok";
+          steps[i].status = d.success === false ? 'failed' : 'ok';
           steps[i].endAt = ev.timestamp;
           pending.delete(d.toolCallId);
         }
         break;
       }
-      case "model.model_call_success":
-        if (typeof d.responseUsage?.completion_tokens === "number") {
+      case 'model.model_call_success':
+        if (typeof d.responseUsage?.completion_tokens === 'number') {
           currentOutputTokens += d.responseUsage.completion_tokens;
           currentOutputSeen = true;
         }
         for (const c of d.responseChunk?.choices || [])
-          if (c?.finish_reason === "length") truncated++;
-        if (typeof d.maxOutputTokens === "number") outputCeiling = d.maxOutputTokens;
+          if (c?.finish_reason === 'length') truncated++;
+        if (typeof d.maxOutputTokens === 'number')
+          outputCeiling = d.maxOutputTokens;
         {
           const partial = d.responseChunk?.choices?.[0]?.delta?.content;
           if (partial)
             callTexts.push({
               text: String(partial),
-              cut: d.responseChunk?.choices?.[0]?.finish_reason === "length",
+              cut: d.responseChunk?.choices?.[0]?.finish_reason === 'length',
             });
         }
         break;
-      case "assistant.message":
+      case 'assistant.message':
         if (d.model) model = d.model;
-        if (typeof d.outputTokens === "number") {
+        if (typeof d.outputTokens === 'number') {
           legacyOutputTokens += d.outputTokens;
           legacyOutputSeen = true;
         }
         if (d.content && String(d.content).trim()) {
           text = String(d.content);
-          steps.push({ kind: "say", at: ev.timestamp, text: text.slice(0, 4000) });
+          steps.push({
+            kind: 'say',
+            at: ev.timestamp,
+            text: text.slice(0, 4000),
+          });
         }
         break;
-      case "session.usage_checkpoint":
-        if (typeof d.totalNanoAiu === "number") nanoAiu = Math.max(nanoAiu ?? 0, d.totalNanoAiu);
+      case 'session.usage_checkpoint':
+        if (typeof d.totalNanoAiu === 'number')
+          nanoAiu = Math.max(nanoAiu ?? 0, d.totalNanoAiu);
         break;
-      case "result":
+      case 'result':
         done = true;
         break;
       default:
@@ -450,13 +476,14 @@ function readCall(file, label) {
       .map((c) => {
         const t =
           c.text.length > CAP
-            ? c.text.slice(0, CAP) + `\n… ${c.text.length - CAP} more characters`
+            ? c.text.slice(0, CAP) +
+              `\n… ${c.text.length - CAP} more characters`
             : c.text;
         return c.cut ? `${t}\n──── cut off here at the output ceiling ────` : t;
       })
-      .join("\n");
+      .join('\n');
     for (let i = steps.length - 1; i >= 0; i--)
-      if (steps[i].kind === "say") {
+      if (steps[i].kind === 'say') {
         steps[i].text = body;
         break;
       }
@@ -466,7 +493,8 @@ function readCall(file, label) {
   // Anything still "running" when the stream ended is really unknown, not running.
   // Reporting a stale spinner forever is exactly the kind of plausible-but-wrong
   // readout this project keeps getting bitten by, so mark it explicitly.
-  if (done) for (const s of steps) if (s.status === "running") s.status = "unknown";
+  if (done)
+    for (const s of steps) if (s.status === 'running') s.status = 'unknown';
 
   let mtime = 0;
   try {
@@ -475,7 +503,10 @@ function readCall(file, label) {
     /* file vanished between readdir and stat */
   }
 
-  const peakParallel = annotateConcurrency(steps, events.at(-1)?.timestamp || null);
+  const peakParallel = annotateConcurrency(
+    steps,
+    events.at(-1)?.timestamp || null,
+  );
 
   return {
     label,
@@ -494,7 +525,7 @@ function readCall(file, label) {
     metered: nanoAiu != null,
     done,
     mtime,
-    toolCount: steps.filter((s) => s.kind === "tool").length,
+    toolCount: steps.filter((s) => s.kind === 'tool').length,
     finalText: text,
     prompt,
   };
@@ -513,16 +544,16 @@ function callFiles(stageDir) {
     return out;
   }
   for (const n of names) {
-    if (!n.endsWith(".jsonl") || n.endsWith(".argv.jsonl")) continue;
+    if (!n.endsWith('.jsonl') || n.endsWith('.argv.jsonl')) continue;
     if (!isFile(path.join(stageDir, n))) continue;
     // A call in flight has only `<label>.live.jsonl`; a settled one has only
     // `<label>.jsonl` (the harness removes the live file once it writes the final
     // one). Normalise to the label so a call never appears twice, and remember
     // which form we found so the UI can mark the in-flight one.
-    const live = n.endsWith(".live.jsonl");
-    const stem = n.replace(/\.live\.jsonl$/, ".jsonl");
+    const live = n.endsWith('.live.jsonl');
+    const stem = n.replace(/\.live\.jsonl$/, '.jsonl');
     if (live && names.includes(stem)) continue; // settled copy wins
-    const label = stem.replace(/\.jsonl$/, "");
+    const label = stem.replace(/\.jsonl$/, '');
     // The argv sidecar is skipped as a CALL above, but it is the only place the
     // CLI session id is recorded, and without it cost cannot be aggregated
     // correctly -- see `applyMarginalAiu`. It is written when the call STARTS, so
@@ -553,7 +584,10 @@ function callFiles(stageDir) {
     });
   }
   return out.sort(
-    (a, b) => a.round - b.round || a.attempt - b.attempt || a.label.localeCompare(b.label),
+    (a, b) =>
+      a.round - b.round ||
+      a.attempt - b.attempt ||
+      a.label.localeCompare(b.label),
   );
 }
 
@@ -604,9 +638,9 @@ export function listRuns(root) {
     return roots.flatMap((r) => listRuns(r)).sort((a, b) => b.mtime - a.mtime);
   }
   const only = roots[0];
-  const resultsDir = path.join(only, "results");
-  const chainRunsDir = path.join(resultsDir, "chain-runs");
-  const logsDir = path.join(chainRunsDir, "logs");
+  const resultsDir = path.join(only, 'results');
+  const chainRunsDir = path.join(resultsDir, 'chain-runs');
+  const logsDir = path.join(chainRunsDir, 'logs');
   // Do not follow a symlink at any boundary component. A dashboard root grants
   // read access to that root's results, not to an arbitrary directory a results
   // symlink happens to target.
@@ -642,8 +676,8 @@ function structuredOutput(finalText) {
   try {
     parsed = JSON.parse(raw);
   } catch {
-    const a = raw.indexOf("{");
-    const b = raw.lastIndexOf("}");
+    const a = raw.indexOf('{');
+    const b = raw.lastIndexOf('}');
     if (a >= 0 && b > a) {
       try {
         parsed = JSON.parse(raw.slice(a, b + 1));
@@ -652,7 +686,8 @@ function structuredOutput(finalText) {
       }
     }
   }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+    return null;
   // Flattened to rows the view can render without knowing the schema. Scalars
   // print inline; a nested value is passed through INTACT so the view can lay it
   // out as structure. It used to be re-serialised here and truncated at 4000
@@ -660,8 +695,8 @@ function structuredOutput(finalText) {
   // long string values -- a plan's blueprints -- that are the reason to look.
   return Object.entries(parsed).map(([k, v]) => ({
     key: k,
-    value: v === null || typeof v !== "object" ? String(v) : v,
-    scalar: v === null || typeof v !== "object",
+    value: v === null || typeof v !== 'object' ? String(v) : v,
+    scalar: v === null || typeof v !== 'object',
   }));
 }
 
@@ -672,7 +707,9 @@ function structuredOutput(finalText) {
 function dropEchoedSay(steps, finalText) {
   if (!finalText) return steps;
   const key = finalText.trim().slice(0, 120);
-  return steps.filter((st) => !(st.kind === "say" && st.text.trim().slice(0, 120) === key));
+  return steps.filter(
+    (st) => !(st.kind === 'say' && st.text.trim().slice(0, 120) === key),
+  );
 }
 
 // A stage log directory carries three facts in its name: `03-code__i2` is the
@@ -713,8 +750,8 @@ function looseOrder(order) {
   const m = new Map();
   if (!order) return m;
   for (const [key, seq] of order) {
-    const i = key.indexOf("/");
-    const j = key.indexOf("/", i + 1);
+    const i = key.indexOf('/');
+    const j = key.indexOf('/', i + 1);
     const k = key.slice(0, j === -1 ? undefined : j);
     const cur = m.get(k);
     if (!cur) m.set(k, { first: seq, last: seq });
@@ -740,11 +777,17 @@ function looseOrder(order) {
 // journal exists; inferring the order is a last resort, not the design.
 function runOrder(rows, order = null) {
   const loose = looseOrder(order);
-  const fallback = (r) => [r.sortIter ?? r.iter ?? 0, r.round ?? 0, r.attempt ?? 0, r.ord ?? 0];
+  const fallback = (r) => [
+    r.sortIter ?? r.iter ?? 0,
+    r.round ?? 0,
+    r.attempt ?? 0,
+    r.ord ?? 0,
+  ];
   const keyed = (r) =>
     order
-      ? (order.get(`${r.id}/${r.iter || 0}/${r.round || 0}/${r.attempt || 0}`) ??
-        loose.get(`${r.id}/${r.iter || 0}`)?.first)
+      ? (order.get(
+          `${r.id}/${r.iter || 0}/${r.round || 0}/${r.attempt || 0}`,
+        ) ?? loose.get(`${r.id}/${r.iter || 0}`)?.first)
       : undefined;
   return [...rows]
     .sort((a, b) => {
@@ -767,16 +810,19 @@ function runOrder(rows, order = null) {
 function readCallOrder(runDir) {
   let text;
   try {
-    text = readRegularFile(path.join(runDir, "_calls.jsonl"));
+    text = readRegularFile(path.join(runDir, '_calls.jsonl'));
   } catch {
     return null;
   }
   const order = new Map();
-  for (const line of text.split("\n")) {
+  for (const line of text.split('\n')) {
     if (!line.trim()) continue;
     try {
       const e = JSON.parse(line);
-      order.set(`${e.id}/${e.iter || 0}/${e.round || 0}/${e.attempt || 0}`, e.seq);
+      order.set(
+        `${e.id}/${e.iter || 0}/${e.round || 0}/${e.attempt || 0}`,
+        e.seq,
+      );
     } catch {
       /* a half-written final line; the rest still orders */
     }
@@ -787,12 +833,12 @@ function readCallOrder(runDir) {
 function readEvents(runDir) {
   let text;
   try {
-    text = readRegularFile(path.join(runDir, "_events.jsonl"));
+    text = readRegularFile(path.join(runDir, '_events.jsonl'));
   } catch {
     return [];
   }
   const events = [];
-  for (const line of text.split("\n")) {
+  for (const line of text.split('\n')) {
     if (!line.trim()) continue;
     try {
       events.push(JSON.parse(line));
@@ -806,7 +852,8 @@ function readEvents(runDir) {
 function commandLifecycles(events) {
   const calls = new Map();
   for (const event of events) {
-    if (!/^command\.stage\.(started|completed|failed)$/.test(event?.type || "")) continue;
+    if (!/^command\.stage\.(started|completed|failed)$/.test(event?.type || ''))
+      continue;
     const identity = event.identity || {};
     if (!identity.stage) continue;
     const key =
@@ -818,21 +865,26 @@ function commandLifecycles(events) {
       iter: identity.iter || 0,
       round: identity.round || 0,
       attempt: identity.attempt || 0,
-      status: "running",
+      status: 'running',
     };
-    if (event.type === "command.stage.started") {
+    if (event.type === 'command.stage.started') {
       current.command = event.command || current.command;
       current.artifact = event.artifact ?? current.artifact ?? null;
-      current.startedAt = event.startedAt || event.timestamp || current.startedAt;
+      current.startedAt =
+        event.startedAt || event.timestamp || current.startedAt;
     } else {
       Object.assign(current, event.result || {});
-      current.status = event.type.endsWith(".completed") ? "completed" : "failed";
-      current.finishedAt = event.result?.finishedAt || event.timestamp || current.finishedAt;
+      current.status = event.type.endsWith('.completed')
+        ? 'completed'
+        : 'failed';
+      current.finishedAt =
+        event.result?.finishedAt || event.timestamp || current.finishedAt;
     }
     calls.set(key, current);
   }
   return [...calls.values()].sort(
-    (a, b) => (a.seq ?? Number.MAX_SAFE_INTEGER) - (b.seq ?? Number.MAX_SAFE_INTEGER),
+    (a, b) =>
+      (a.seq ?? Number.MAX_SAFE_INTEGER) - (b.seq ?? Number.MAX_SAFE_INTEGER),
   );
 }
 
@@ -849,7 +901,7 @@ function mergeOrder(callOrder, commands) {
 export function readRun(runDir, root) {
   const stages = [];
   const base = path.basename(runDir);
-  const logsDir = path.resolve(root, "results", "chain-runs", "logs");
+  const logsDir = path.resolve(root, 'results', 'chain-runs', 'logs');
   const resolvedRunDir = path.resolve(runDir);
   if (path.dirname(resolvedRunDir) !== logsDir || !isDirectory(resolvedRunDir))
     return { id: base, stages: [], totals: {}, live: false };
@@ -868,14 +920,14 @@ export function readRun(runDir, root) {
   // existed still reads, it just shows only what it observed.
   let plan = null;
   try {
-    plan = JSON.parse(readRegularFile(path.join(runDir, "_chain.json")));
+    plan = JSON.parse(readRegularFile(path.join(runDir, '_chain.json')));
   } catch {
     /* absent, or being written */
   }
   const planned = new Map((plan?.stages || []).map((s) => [s.id, s]));
   const events = readEvents(runDir);
   let summary = null;
-  const summaryFile = path.join(root, "results", "chain-runs", `${base}.json`);
+  const summaryFile = path.join(root, 'results', 'chain-runs', `${base}.json`);
   if (existsSync(summaryFile)) {
     try {
       summary = JSON.parse(readRegularFile(summaryFile));
@@ -906,7 +958,8 @@ export function readRun(runDir, root) {
   commandCalls.length = 0;
   commandCalls.push(
     ...[...commandByIdentity.values()].sort(
-      (a, b) => (a.seq ?? Number.MAX_SAFE_INTEGER) - (b.seq ?? Number.MAX_SAFE_INTEGER),
+      (a, b) =>
+        (a.seq ?? Number.MAX_SAFE_INTEGER) - (b.seq ?? Number.MAX_SAFE_INTEGER),
     ),
   );
   const preOrder = mergeOrder(readCallOrder(runDir), commandCalls);
@@ -942,8 +995,12 @@ export function readRun(runDir, root) {
   const orderedCalls = groups
     .flatMap((group) => group.calls)
     .sort((a, b) => {
-      const ak = preOrder?.get(`${a.stageId}/${a.iter || 0}/${a.round || 0}/${a.attempt || 0}`);
-      const bk = preOrder?.get(`${b.stageId}/${b.iter || 0}/${b.round || 0}/${b.attempt || 0}`);
+      const ak = preOrder?.get(
+        `${a.stageId}/${a.iter || 0}/${a.round || 0}/${a.attempt || 0}`,
+      );
+      const bk = preOrder?.get(
+        `${b.stageId}/${b.iter || 0}/${b.round || 0}/${b.attempt || 0}`,
+      );
       if (ak !== undefined && bk !== undefined) return ak - bk;
       if (ak !== undefined) return -1;
       if (bk !== undefined) return 1;
@@ -976,15 +1033,21 @@ export function readRun(runDir, root) {
     // it there meant a live run could never show the handoff at all.
     const openedAt = new Map();
     for (const c of [...calls].sort(
-      (a, b) => (a.round || 0) - (b.round || 0) || (a.attempt || 0) - (b.attempt || 0),
+      (a, b) =>
+        (a.round || 0) - (b.round || 0) || (a.attempt || 0) - (b.attempt || 0),
     ))
       if (c.sessionId && !openedAt.has(c.sessionId))
         openedAt.set(c.sessionId, (c.round || 0) * 1000 + (c.attempt || 0));
-    for (const [round, rounds] of [...byRound.entries()].sort((a, b) => a[0] - b[0])) {
+    for (const [round, rounds] of [...byRound.entries()].sort(
+      (a, b) => a[0] - b[0],
+    )) {
       const resumedHere = rounds.some(
-        (c) => c.sessionId && openedAt.get(c.sessionId) < (c.round || 0) * 1000 + (c.attempt || 0),
+        (c) =>
+          c.sessionId &&
+          openedAt.get(c.sessionId) < (c.round || 0) * 1000 + (c.attempt || 0),
       );
-      const explicitResume = rounds.find((c) => c.resumedFrom)?.resumedFrom || null;
+      const explicitResume =
+        rounds.find((c) => c.resumedFrom)?.resumedFrom || null;
       stages.push({
         id,
         ord,
@@ -1012,7 +1075,8 @@ export function readRun(runDir, root) {
             ? rounds.reduce((n, r2) => n + (r2.outputTokens ?? 0), 0)
             : null,
         truncated: rounds.reduce((n, r2) => n + (r2.truncated || 0), 0),
-        outputCeiling: rounds.find((r2) => r2.outputCeiling)?.outputCeiling ?? null,
+        outputCeiling:
+          rounds.find((r2) => r2.outputCeiling)?.outputCeiling ?? null,
         tools: rounds.reduce((n, r2) => n + r2.toolCount, 0),
         unmetered: rounds.filter((r2) => !r2.metered).length,
         // NOTHING REPORTED IS NOT ZERO. The CLI emits usage only when a call
@@ -1021,13 +1085,16 @@ export function readRun(runDir, root) {
         // stage doing 41 tool calls for free, when the real answer, minutes later,
         // was 58.83 AiU. Every call unmetered and nothing totalled means the number
         // is absent, which is a different claim from free.
-        aiuKnown: !(rounds.every((r2) => !r2.metered) && !rounds.some((r2) => r2.aiu)),
+        aiuKnown: !(
+          rounds.every((r2) => !r2.metered) && !rounds.some((r2) => r2.aiu)
+        ),
         // Prefer the model the run DECLARED. A stage that has not produced an
         // assistant message yet has no observed model, and blank is the wrong answer
         // to "which model is this" -- the config already said.
-        model: rounds.find((r2) => r2.model)?.model || planned.get(id)?.model || "",
+        model:
+          rounds.find((r2) => r2.model)?.model || planned.get(id)?.model || '',
         inFlight: rounds.some((r2) => r2.inFlight),
-        status: rounds.some((r2) => r2.inFlight) ? "running" : "ran",
+        status: rounds.some((r2) => r2.inFlight) ? 'running' : 'ran',
       });
     }
   }
@@ -1058,8 +1125,8 @@ export function readRun(runDir, root) {
         round: first.round || 0,
         attempt: first.attempt || 0,
         key:
-          `${first.id}${first.iter ? `#${first.iter}` : ""}` +
-          `${first.round ? `#r${first.round}` : ""}`,
+          `${first.id}${first.iter ? `#${first.iter}` : ''}` +
+          `${first.round ? `#r${first.round}` : ''}`,
         label: first.iter ? `${first.id} · ${first.iter}` : first.id,
         rounds: [],
         aiu: 0,
@@ -1069,7 +1136,7 @@ export function readRun(runDir, root) {
         outputCeiling: null,
         tools: 0,
         unmetered: 0,
-        model: "",
+        model: '',
         metricsApplicable: false,
         noModelCalls: true,
         inFlight: false,
@@ -1078,18 +1145,18 @@ export function readRun(runDir, root) {
     }
     st.commandRuns = commands;
     const latest = commands.at(-1);
-    st.status = latest?.status || "running";
+    st.status = latest?.status || 'running';
     const timeoutMs = planned.get(first.id)?.timeoutMs;
     const expiresAfter = Math.max(90_000, Number(timeoutMs || 0) + 30_000);
     if (
       !summary &&
-      st.status === "running" &&
+      st.status === 'running' &&
       Date.now() - Date.parse(latest.startedAt || 0) > expiresAfter
     ) {
-      latest.status = "interrupted";
-      st.status = "interrupted";
+      latest.status = 'interrupted';
+      st.status = 'interrupted';
     }
-    st.inFlight = st.status === "running";
+    st.inFlight = st.status === 'running';
     st.wallMs = commands.reduce((n, command) => n + (command.wallMs || 0), 0);
   }
 
@@ -1111,7 +1178,7 @@ export function readRun(runDir, root) {
   // same way a model stage earns one per element by leaving a log directory.
   const journalElems = new Map();
   for (const key of preOrder?.keys() || []) {
-    const [id, it] = key.split("/");
+    const [id, it] = key.split('/');
     if (!journalElems.has(id)) journalElems.set(id, new Set());
     journalElems.get(id).add(Number(it) || 0);
   }
@@ -1133,16 +1200,18 @@ export function readRun(runDir, root) {
     outputCeiling: null,
     tools: 0,
     unmetered: 0,
-    model: p.model || "",
+    model: p.model || '',
     metricsApplicable: !p.run,
     aiuKnown: p.run ? false : undefined,
     noModelCalls: !!p.run,
     inFlight: false,
-    status: "pending",
+    status: 'pending',
   });
   for (const p of plan?.stages || []) {
     if (seen.has(p.id)) continue;
-    const elems = [...(journalElems.get(p.id) || [])].filter((n) => n > 0).sort((a, b) => a - b);
+    const elems = [...(journalElems.get(p.id) || [])]
+      .filter((n) => n > 0)
+      .sort((a, b) => a - b);
     if (elems.length) for (const it of elems) stages.push(pendingRow(p, it));
     else stages.push(pendingRow(p, 0));
   }
@@ -1152,7 +1221,10 @@ export function readRun(runDir, root) {
   if (!order && Array.isArray(summary?.stageLog)) {
     order = new Map();
     summary.stageLog.forEach((e, i) => {
-      order.set(`${e.id}/${e.iter || 0}/${e.round || 0}/${e.attempt || 0}`, i + 1);
+      order.set(
+        `${e.id}/${e.iter || 0}/${e.round || 0}/${e.attempt || 0}`,
+        i + 1,
+      );
     });
   }
   const ordered = runOrder(stages, order);
@@ -1186,7 +1258,8 @@ export function readRun(runDir, root) {
   // the exact call attempt they judged; the finished record below may enrich or
   // replace the stage-level view once authoritative data exists.
   for (const event of events) {
-    if (event?.type !== "completion.checked" || event.scope !== "stage") continue;
+    if (event?.type !== 'completion.checked' || event.scope !== 'stage')
+      continue;
     const identity = event.identity || {};
     const st = stages.find(
       (row) =>
@@ -1197,7 +1270,9 @@ export function readRun(runDir, root) {
     if (!st) continue;
     if (!Array.isArray(st.completion)) st.completion = [];
     st.completion.push(event.check);
-    const call = st.rounds.find((row) => (row.attempt || 0) === (identity.callAttempt || 0));
+    const call = st.rounds.find(
+      (row) => (row.attempt || 0) === (identity.callAttempt || 0),
+    );
     if (call) call.completionCheck = event.check;
   }
 
@@ -1220,15 +1295,16 @@ export function readRun(runDir, root) {
   if (summary) {
     const ran = new Set((summary.stageLog || []).map((s) => s.id));
     const wall = new Map();
-    for (const s of summary.stageLog || []) wall.set(s.id, (wall.get(s.id) || 0) + (s.wallMs || 0));
+    for (const s of summary.stageLog || [])
+      wall.set(s.id, (wall.get(s.id) || 0) + (s.wallMs || 0));
     for (const st of stages) {
-      if (st.status !== "pending") continue;
+      if (st.status !== 'pending') continue;
       if (ran.has(st.id)) {
-        st.status = "ran";
+        st.status = 'ran';
         st.noModelCalls = true;
         st.wallMs = wall.get(st.id) || 0;
       } else {
-        st.status = summary.halted ? "unreached" : "skipped";
+        st.status = summary.halted ? 'unreached' : 'skipped';
       }
     }
   } else if (order) {
@@ -1250,11 +1326,11 @@ export function readRun(runDir, root) {
     for (const seq of order.values()) if (seq > maxSeq) maxSeq = seq;
     const loose = looseOrder(order);
     for (const st of stages) {
-      if (st.status !== "pending") continue;
+      if (st.status !== 'pending') continue;
       const seq = loose.get(`${st.id}/${st.iter || 0}`)?.last;
       if (!seq) continue;
       st.noModelCalls = true;
-      st.status = seq < maxSeq ? "ran" : "running";
+      st.status = seq < maxSeq ? 'ran' : 'running';
     }
   }
 
@@ -1273,7 +1349,8 @@ export function readRun(runDir, root) {
       if (!e.sessionId) continue;
       const k = sessionKey(e);
       const pos = (e.round || 0) * 1000 + (e.attempt || 0);
-      if (!sessionOpenedAt.has(k) || pos < sessionOpenedAt.get(k)) sessionOpenedAt.set(k, pos);
+      if (!sessionOpenedAt.has(k) || pos < sessionOpenedAt.get(k))
+        sessionOpenedAt.set(k, pos);
     }
     for (const st of stages) {
       // Match on iteration AND round. A fan-out stage shares its id across every
@@ -1284,11 +1361,14 @@ export function readRun(runDir, root) {
       // loop's round 1 and round 2 would each claim both rounds' files.
       const entries = summary.stageLog.filter(
         (e) =>
-          e.id === st.id && (e.iter || 0) === (st.iter || 0) && (e.round || 0) === (st.round || 0),
+          e.id === st.id &&
+          (e.iter || 0) === (st.iter || 0) &&
+          (e.round || 0) === (st.round || 0),
       );
       if (!entries.length) continue;
       const files = new Set();
-      for (const e of entries) for (const f of e.filesChanged || []) files.add(f);
+      for (const e of entries)
+        for (const f of e.filesChanged || []) files.add(f);
       st.filesChanged = [...files].sort();
       // A stage inheriting another's conversation is a large unnamed handoff. Name
       // it -- but name it only when it HAPPENED. `resume` in the record is the
@@ -1302,11 +1382,13 @@ export function readRun(runDir, root) {
         entries.find((e) => e.resumeFrom)?.resumeFrom ||
         entries.find((e) => e.resume)?.resume ||
         null;
-      const explicitResume = entries.find((e) => e.resumedFrom)?.resumedFrom || null;
+      const explicitResume =
+        entries.find((e) => e.resumedFrom)?.resumedFrom || null;
       const inherited = entries.some(
         (e) =>
           e.sessionId &&
-          sessionOpenedAt.get(sessionKey(e)) < (e.round || 0) * 1000 + (e.attempt || 0),
+          sessionOpenedAt.get(sessionKey(e)) <
+            (e.round || 0) * 1000 + (e.attempt || 0),
       );
       // Only ever UPGRADES the observed fact with the record's richer label (which
       // conversation was inherited). It must not downgrade to null: the call-derived
@@ -1315,13 +1397,16 @@ export function readRun(runDir, root) {
         st.resume = explicitResume.stage || declaredResume || true;
         st.resumedFrom = explicitResume;
       } else if (inherited) st.resume = declaredResume || true;
-      st.sessionIds = [...new Set(entries.map((e) => e.sessionId).filter(Boolean))];
+      st.sessionIds = [
+        ...new Set(entries.map((e) => e.sessionId).filter(Boolean)),
+      ];
       st.expects = entries.find((e) => e.expects)?.expects || null;
       st.completion = entries.map((e) => e.completion).filter(Boolean);
       // A stage that was handed tools and used none verified nothing, and its output
       // is otherwise indistinguishable from a checked one. The run record carries the
       // fact; without this the canvas would show a normal green stage.
-      st.declaredToolsUnused = entries.some((e) => e.declaredToolsUnused) || false;
+      st.declaredToolsUnused =
+        entries.some((e) => e.declaredToolsUnused) || false;
       const commandRuns = entries
         .filter((e) => e.commandResult)
         .map((e) => ({
@@ -1336,23 +1421,30 @@ export function readRun(runDir, root) {
   }
   // Round-over-round artifact values, so a loop can be read as converging or
   // thrashing rather than just as N billable rounds.
-  const artifactHistory = Array.isArray(summary?.artifactHistory) ? summary.artifactHistory : [];
+  const artifactHistory = Array.isArray(summary?.artifactHistory)
+    ? summary.artifactHistory
+    : [];
 
   // The manifest counts as activity: a run that has declared its pipeline but not
   // yet produced a first assistant message is starting, not stale.
   let planMtime = 0;
   try {
-    planMtime = lstatSync(path.join(runDir, "_chain.json")).mtimeMs;
+    planMtime = lstatSync(path.join(runDir, '_chain.json')).mtimeMs;
   } catch {
     /* pre-manifest run */
   }
   let eventsMtime = 0;
   try {
-    eventsMtime = lstatSync(path.join(runDir, "_events.jsonl")).mtimeMs;
+    eventsMtime = lstatSync(path.join(runDir, '_events.jsonl')).mtimeMs;
   } catch {
     /* pre-event run */
   }
-  const newest = Math.max(0, planMtime, eventsMtime, ...all.map((c) => c.mtime));
+  const newest = Math.max(
+    0,
+    planMtime,
+    eventsMtime,
+    ...all.map((c) => c.mtime),
+  );
   const totals = {
     // Safe to sum here ONLY because `applyMarginalAiu` already turned each call's
     // session-cumulative checkpoint into that call's own cost. The comment that
@@ -1380,9 +1472,9 @@ export function readRun(runDir, root) {
   const live =
     !summary &&
     (all.some((c) => c.inFlight) ||
-      stages.some((stage) => stage.status === "running") ||
+      stages.some((stage) => stage.status === 'running') ||
       Date.now() - newest < 90_000);
-  const unit = (plan?.foreach?.as || "").trim() || "element";
+  const unit = (plan?.foreach?.as || '').trim() || 'element';
   return {
     id: base,
     stages,
