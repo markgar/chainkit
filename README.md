@@ -121,6 +121,8 @@ Completion is optional. A successful chain with no top-level completion exits su
     models.mjs           probe the CLI for which model ids it actually accepts
     check.mjs            the whole project check: format, lint, deadcode, every selftest
     selftest.mjs         deterministic behaviour gate — run after any kernel change
+    vendor.mjs           canonical consumer install/update + integrity verification
+    vendor.selftest.mjs  consumer-fixture distribution gate
     kernel/
       config.mjs         load + STATIC validation (fails free, before any spend)
       context.mjs        artifact store + {{placeholder}} rendering
@@ -192,16 +194,66 @@ Each directory is self-contained: the chain, every prompt it uses, and a README 
 
 ## Vendoring it into a repo
 
-chainkit is consumed by copying it into a host repo at `vendor/chainkit/`. The split that matters:
+Install from a clean, committed Chainkit checkout:
 
-- **`vendor/chainkit/`** is the engine and its **examples**. It is replaced wholesale on upgrade and never edited in the host. Verify that by recording a content hash of the copy and checking it in the host's own gate — an in-place edit here is not a small mistake, it is work that disappears later with no error and no diff.
-- **`.chainkit/`** in the host is what the host owns: the chains it actually runs, their prompts, and the run records they produce.
+```sh
+node /absolute/path/to/chainkit/vendor.mjs install /absolute/path/to/consumer
+node /absolute/path/to/consumer/vendor/chainkit/vendor.mjs check /absolute/path/to/consumer
+```
+
+`install` replaces only `vendor/chainkit/` and Chainkit's own root installations. It creates missing parent directories and installs:
+
+```text
+.github/extensions/chainkit-canvas/
+  extension.mjs
+  render.mjs
+  selftest.mjs
+  telemetry.mjs
+.github/skills/chainkit/
+  SKILL.md
+```
+
+Project extensions are discovered only at repository-root `.github/extensions/`; the source copy under `vendor/chainkit/extensions/` is not loaded by the consumer. Reinstalling updates the managed `chainkit-canvas/` and `chainkit/` directories exactly, including removing files retired upstream, but does not remove or edit sibling extensions, sibling skills, or consumer-owned `.chainkit/` policy.
+
+The split that matters:
+
+- **`vendor/chainkit/`** is the engine and its **examples**. It is replaced wholesale on upgrade and never edited in the host.
+- **`.github/extensions/chainkit-canvas/`** and **`.github/skills/chainkit/`** are deterministic root copies owned by the same Chainkit revision. Consumer-specific extensions and skills stay in sibling directories.
+- **`.chainkit/`** in the host is what the host owns: wrappers, policy, the chains it actually runs, their prompts, and the run records they produce.
 
 The test the split is designed against: **delete `vendor/chainkit/`, drop in a newer copy, lose nothing.** If something you would miss dies in that swap, it was in the wrong directory. Run records follow the same rule — the engine writes them beside the **chain** that produced them (`<chain dir>/../results`), so a host chain records into the host, not into a directory the next upgrade destroys.
 
-Note that the engine's own gate passes happily on a modified vendored copy: it checks whether the engine is **correct**, not whether it is **authentic**. Those are different questions and need two checks.
+`.chainkit/vendor.json` retains the established vendor inventory shape: upstream repository, full revision, MIT license, and every vendored file's SHA-256 plus executable bit. `.chainkit/vendor-install.json` applies the same provenance and integrity coverage to the root-installed dashboard and skill. Keeping these separate is deliberate compatibility: existing consumers that parse `vendor.json` strictly do not need a manifest migration. The canonical `check` command verifies both.
 
-The two canvases under `extensions/` are part of the engine's surface, so `check.mjs` runs their selftests. A host repo installs them wherever it keeps extensions; the gate looks them up in both places rather than requiring either.
+An engine gate can pass on a modified vendored copy: it checks whether the engine is **correct**, not whether it is **authentic**. Run the vendor integrity check as a separate consumer gate. A consumer updating from a manually selected `git archive` may run the copied installer in place after replacing `vendor/chainkit/`:
+
+```sh
+node vendor/chainkit/vendor.mjs install . --revision <full-upstream-commit>
+```
+
+Never overlay a new archive onto the old vendor directory, and never patch the root-installed copies. A portability defect belongs upstream in Chainkit, followed by another canonical install.
+
+### Runs dashboard
+
+The installed `chainkit-runs` canvas is read-only. It accepts `{root, run}`, reads only beneath `<root>/results`, and serves an ephemeral localhost page for the lifetime of the canvas instance. For a consumer worktree, pass its absolute `.chainkit` directory:
+
+```js
+open_canvas({
+  canvasId: "chainkit-runs",
+  instanceId: "chainkit-run",
+  input: { root: "/absolute/worktree/.chainkit", run: "latest" },
+});
+
+open_canvas({
+  canvasId: "chainkit-runs",
+  instanceId: "chainkit-run",
+  input: { root: "/absolute/worktree/.chainkit", run: "<full-run-id>" },
+});
+```
+
+`latest` follows the newest run and is appropriate when only one run is active. A full run id pins the panel. `tag:<tag>` follows the newest run carrying a tag and is the stable choice when runs may overlap. The run id appears under `.chainkit/results/chain-runs/logs/`.
+
+The two source canvases under `extensions/` remain part of the engine's tested surface, so `check.mjs` runs their selftests before distribution.
 
 ## Developing
 

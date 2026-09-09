@@ -4,5 +4,15 @@
   "trailingComma": "all",
   "printWidth": 100,
   "tabWidth": 2,
-  "proseWrap": "never"
+  "proseWrap": "never",
+  "overrides": [
+    {
+      "files": ["extensions/chainkit-canvas/*.mjs", "skills/chainkit/SKILL.md"],
+      "options": {
+        "singleQuote": true,
+        "printWidth": 80,
+        "proseWrap": "preserve"
+      }
+    }
+  ]
 }

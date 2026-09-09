@@ -27,7 +27,10 @@
 
 import { providerFor } from "./providers.mjs";
 
-// Probed with `node models.mjs` on 2026-08-17.
+// Base roster probed with `node models.mjs` on 2026-08-17.
+// `gpt-5.6-sol-fast` was confirmed without another probe by successful dispatch
+// in Agent Canvas run `agent-canvas-feature__run__2026-09-08T18-28-19` on
+// 2026-09-08: its plan completed and plan-review started on that exact model.
 // "auto" is in the list because it is a real accepted value, not a model -- it asks
 // the CLI to choose. A chain may legitimately use it.
 const KNOWN_MODELS = new Set([
@@ -39,6 +42,7 @@ const KNOWN_MODELS = new Set([
   "claude-sonnet-4.6",
   "claude-haiku-4.5",
   "gpt-5.6-sol",
+  "gpt-5.6-sol-fast",
   "gpt-5.6-terra",
   "gpt-5.6-luna",
   "gpt-5.5",
@@ -126,6 +130,10 @@ export function selfTest() {
   CASES.push([
     "a roster model is not warned about",
     warn({ stages: [{ id: "a", model: "claude-opus-5" }] }).length === 0,
+  ]);
+  CASES.push([
+    "a dispatch-confirmed canonical model is not warned about",
+    modelWarnings({ stages: [{ id: "a", model: "gpt-5.6-sol-fast" }] }).length === 0,
   ]);
   CASES.push([
     "an unknown model is warned about",
